@@ -11,6 +11,7 @@ use Illuminate\Console\Command;
 
 final class ProvisionNodeCommand extends Command
 {
+    #[\Override]
     protected $signature = 'orbit:node-provision
         {name : Node name}
         {host : Public SSH host}
@@ -19,8 +20,10 @@ final class ProvisionNodeCommand extends Command
         {--role=* : Initial role assignment}
         {--wireguard-address= : Stable WireGuard address}
         {--wireguard-endpoint= : Per-node WireGuard endpoint override}
-        {--dns-server= : Per-node DNS server override}';
+        {--dns-server= : Per-node DNS server override}
+        {--host-key-fingerprint= : Expected first-contact SSH SHA256 fingerprint}';
 
+    #[\Override]
     protected $description = 'Provision the first node directly from the gateway.';
 
     public function handle(ProvisionNodeAction $action): int
@@ -46,6 +49,7 @@ final class ProvisionNodeCommand extends Command
             wireguardAddress: $this->stringOption('wireguard-address'),
             wireguardEndpointOverride: $this->stringOption('wireguard-endpoint'),
             dnsServerOverride: $this->stringOption('dns-server'),
+            expectedSshHostFingerprint: $this->stringOption('host-key-fingerprint'),
         ));
 
         $this->info("Node [{$node->name}] is {$node->status->value}.");

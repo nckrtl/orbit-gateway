@@ -2,7 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Domain\Shared\LifecycleStatus;
 use App\Models\Activity;
+use App\Models\App as OrbitApp;
+use App\Models\Node;
 use Illuminate\Support\Str;
 
 it('records one completed activity for each API command', function (): void {
@@ -32,8 +35,15 @@ it('recursively redacts sensitive input and URL userinfo before persistence', fu
     $repositoryPassword = (string) Str::uuid();
     $nestedToken = (string) Str::uuid();
     $nestedPassword = (string) Str::uuid();
+    Node::query()->create([
+        'name' => 'operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.2',
+        'wireguard_address' => '10.44.0.2',
+    ]);
 
     $this
+        ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
         ->withHeader('X-Orbit-Request-Id', $requestId)
         ->postJson('/api/v1/apps', [
             'slug' => 'secret-app',
@@ -72,4 +82,38 @@ it('records route model binding failures as http 404', function (): void {
         ->assertJsonPath('error.code', 'http.404');
 
     expect(Activity::query()->where('request_id', $requestId)->sole()->error_code)->toBe('http.404');
+});
+
+it('correlates unhandled failures without exposing exception text', function (): void {
+    $requestId = (string) Str::uuid();
+    $secret = (string) Str::uuid();
+    Node::query()->create([
+        'name' => 'operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.2',
+        'wireguard_address' => '10.44.0.2',
+    ]);
+    OrbitApp::creating(static function () use ($secret): never {
+        throw new RuntimeException("Unexpected APP_KEY={$secret}");
+    });
+
+    $response = $this
+        ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
+        ->withHeader('X-Orbit-Request-Id', $requestId)
+        ->postJson('/api/v1/apps', [
+            'slug' => 'acme',
+            'repository_url' => 'https://github.com/acme/site.git',
+        ]);
+
+    $response
+        ->assertInternalServerError()
+        ->assertHeader('X-Orbit-Request-Id', $requestId)
+        ->assertJsonPath('error.code', 'gateway.unhandled')
+        ->assertJsonPath('error.message', 'The gateway could not complete the request.');
+
+    expect($response->getContent())
+        ->not
+        ->toContain($secret)
+        ->and(Activity::query()->where('request_id', $requestId)->sole()->error_code)
+        ->toBe('gateway.unhandled');
 });

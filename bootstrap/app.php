@@ -145,6 +145,28 @@ return Application::configure(basePath: dirname(__DIR__))
         ): JsonResponse {
             return $notFound($request);
         });
+        $exceptions->render(function (Throwable $exception, Request $request): ?JsonResponse {
+            if (! $request->is('api/*')) {
+                return null;
+            }
+
+            $request->attributes->set('orbit.error_code', 'gateway.unhandled');
+            $requestId = $request->attributes->get('orbit.request_id');
+
+            if (! is_string($requestId) || $requestId === '') {
+                $requestId = $request->header('X-Orbit-Request-Id', '');
+            }
+
+            return response()
+                ->json([
+                    'error' => [
+                        'code' => 'gateway.unhandled',
+                        'message' => 'The gateway could not complete the request.',
+                        'details' => [],
+                    ],
+                ], 500)
+                ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
+        });
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );

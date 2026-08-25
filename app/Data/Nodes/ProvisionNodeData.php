@@ -20,5 +20,6 @@ final class ProvisionNodeData extends Data
         public ?string $wireguardAddress = null,
         public ?string $wireguardEndpointOverride = null,
         public ?string $dnsServerOverride = null,
+        public ?string $expectedSshHostFingerprint = null,
     ) {}
 }

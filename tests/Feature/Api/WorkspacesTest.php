@@ -67,6 +67,7 @@ describe('workspace API', function (): void {
                 'role' => RoleName::AppDev,
                 'status' => LifecycleStatus::Active,
             ]);
+        $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.3']);
         $app = OrbitApp::query()->create([
             'name' => 'Acme',
             'slug' => 'acme',

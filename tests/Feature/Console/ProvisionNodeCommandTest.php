@@ -7,7 +7,7 @@ use App\Models\Node;
 
 it('provisions the first peer from the gateway console', function (): void {
     app()->instance(NodeConverger::class, new class implements NodeConverger {
-        public function converge(Node $node): void {}
+        public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
     });
 
     $this
@@ -18,6 +18,7 @@ it('provisions the first peer from the gateway console', function (): void {
             '--wireguard-address' => '10.44.0.2',
             '--wireguard-endpoint' => '10.0.0.2:51820',
             '--dns-server' => '10.0.0.2',
+            '--host-key-fingerprint' => 'SHA256:pinned',
         ])
         ->expectsOutputToContain('Node [operator] is active.')
         ->assertExitCode(0);

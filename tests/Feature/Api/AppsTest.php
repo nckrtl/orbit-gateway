@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\Shared\LifecycleStatus;
 use App\Models\Activity;
 use App\Models\App as OrbitApp;
 use App\Models\Instance;
@@ -9,6 +10,16 @@ use App\Models\Node;
 use Illuminate\Support\Str;
 
 describe('app API', function (): void {
+    beforeEach(function (): void {
+        Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.2',
+            'wireguard_address' => '10.44.0.2',
+        ]);
+        $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.2']);
+    });
+
     it('creates an app with a default name and treats its slug and repository as immutable identity', function (): void {
         $requestId = (string) Str::uuid();
         $first = $this

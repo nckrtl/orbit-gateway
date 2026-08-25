@@ -31,7 +31,7 @@ final readonly class NativeNodeConverger implements NodeConverger
         private AppDevCaddyManager $appDevCaddy,
     ) {}
 
-    public function converge(Node $node): void
+    public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
     {
         $hostKey = $this->hostKeys->scan($node->public_ssh_host, $node->public_ssh_port);
 
@@ -43,6 +43,25 @@ final readonly class NativeNodeConverger implements NodeConverger
                 step: 'ssh-host-key',
                 errorCode: 'node.ssh_host_key_changed',
                 message: "The SSH host key changed for node [{$node->name}].",
+            );
+        }
+
+        if ($node->ssh_host_fingerprint === null && $expectedSshHostFingerprint === null) {
+            throw new NodeProvisioningException(
+                step: 'ssh-host-key',
+                errorCode: 'node.ssh_host_fingerprint_required',
+                message: "An expected SSH host fingerprint is required for node [{$node->name}].",
+            );
+        }
+
+        if (
+            $expectedSshHostFingerprint !== null
+            && ! hash_equals($expectedSshHostFingerprint, $hostKey->fingerprint)
+        ) {
+            throw new NodeProvisioningException(
+                step: 'ssh-host-key',
+                errorCode: 'node.ssh_host_key_mismatch',
+                message: "The SSH host fingerprint did not match for node [{$node->name}].",
             );
         }
 

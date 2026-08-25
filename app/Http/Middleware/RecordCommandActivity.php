@@ -23,12 +23,12 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /** @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware. */
-final class RecordCommandActivity
+final readonly class RecordCommandActivity
 {
     public function __construct(
-        private readonly CommandDeadline $deadline,
-        private readonly CommandActivityInputSanitizer $inputSanitizer,
-        private readonly CommandActivityTargetResolver $targetResolver,
+        private CommandDeadline $deadline,
+        private CommandActivityInputSanitizer $inputSanitizer,
+        private CommandActivityTargetResolver $targetResolver,
     ) {}
 
     public function handle(Request $request, Closure $next): Response
@@ -65,6 +65,7 @@ final class RecordCommandActivity
     {
         $requestId = $request->attributes->get('orbit.request_id');
         $command = $request->route()->getName();
+        $callerIp = $this->callerIp($request);
 
         return Activity::query()->create([
             'log_name' => 'commands',
@@ -77,8 +78,8 @@ final class RecordCommandActivity
             ],
             'request_id' => is_string($requestId) ? $requestId : '',
             'command' => is_string($command) ? $command : 'unknown',
-            'caller_node_id' => $this->callerNodeId($request),
-            'caller_ip' => $request->ip(),
+            'caller_node_id' => $this->callerNodeId($callerIp),
+            'caller_ip' => $callerIp,
             'status' => 'running',
         ]);
     }
@@ -159,14 +160,21 @@ final class RecordCommandActivity
         ];
     }
 
-    private function callerNodeId(Request $request): ?int
+    private function callerNodeId(string $callerIp): ?int
     {
         $node = Node::query()
-            ->where('wireguard_address', $request->ip())
+            ->where('wireguard_address', $callerIp)
             ->where('status', 'active')
             ->first();
 
         return $node?->id;
+    }
+
+    private function callerIp(Request $request): string
+    {
+        $remoteAddress = $request->server('REMOTE_ADDR');
+
+        return is_string($remoteAddress) ? $remoteAddress : '';
     }
 
     private function duration(float $startedAt): int

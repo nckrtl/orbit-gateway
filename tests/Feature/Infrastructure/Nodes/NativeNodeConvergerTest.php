@@ -73,7 +73,7 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         appDevCaddy: $caddy,
     );
 
-    $converger->converge($node);
+    $converger->converge($node, 'SHA256:pinned');
 
     expect($node->refresh()->ssh_user)
         ->toBe('orbit')
@@ -130,6 +130,73 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toBe(['true']);
 });
 
+it('requires an expected fingerprint before first-contact SSH', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $knownHostsWrites = [];
+    $sshCalls = [];
+    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls);
+
+    expect(fn () => $converger->converge($node))
+        ->toThrow(function (NodeProvisioningException $exception): void {
+            expect($exception->step)
+                ->toBe('ssh-host-key')
+                ->and($exception->errorCode)
+                ->toBe('node.ssh_host_fingerprint_required');
+        });
+
+    expect($knownHostsWrites)
+        ->toBeEmpty()
+        ->and($sshCalls)
+        ->toBeEmpty()
+        ->and($node->refresh()->ssh_host_fingerprint)
+        ->toBeNull();
+});
+
+it('rejects a first-contact fingerprint mismatch before pinning or SSH', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $knownHostsWrites = [];
+    $sshCalls = [];
+    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls);
+
+    expect(fn () => $converger->converge($node, 'SHA256:different'))
+        ->toThrow(function (NodeProvisioningException $exception): void {
+            expect($exception->step)
+                ->toBe('ssh-host-key')
+                ->and($exception->errorCode)
+                ->toBe('node.ssh_host_key_mismatch');
+        });
+
+    expect($knownHostsWrites)
+        ->toBeEmpty()
+        ->and($sshCalls)
+        ->toBeEmpty()
+        ->and($node->refresh()->ssh_host_fingerprint)
+        ->toBeNull();
+});
+
+it('preserves the stored pin when a known node host key changes', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $node->update(['ssh_host_fingerprint' => 'SHA256:original']);
+    $knownHostsWrites = [];
+    $sshCalls = [];
+    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls);
+
+    expect(fn () => $converger->converge($node))
+        ->toThrow(function (NodeProvisioningException $exception): void {
+            expect($exception->step)
+                ->toBe('ssh-host-key')
+                ->and($exception->errorCode)
+                ->toBe('node.ssh_host_key_changed');
+        });
+
+    expect($knownHostsWrites)
+        ->toBeEmpty()
+        ->and($sshCalls)
+        ->toBeEmpty()
+        ->and($node->refresh()->ssh_host_fingerprint)
+        ->toBe('SHA256:original');
+});
+
 it('converges app-dev Caddy only after WireGuard SSH succeeds', function (): void {
     $node = provisionable_node(role: RoleName::AppDev);
 
@@ -179,7 +246,7 @@ it('converges app-dev Caddy only after WireGuard SSH succeeds', function (): voi
         appDevCaddy: $caddy,
     );
 
-    $converger->converge($node);
+    $converger->converge($node, 'SHA256:pinned');
 
     expect($events)
         ->toHaveCount(5)
@@ -225,7 +292,7 @@ it('does not converge app-dev Caddy for nodes without the app-dev role', functio
         appDevCaddy: $caddy,
     );
 
-    $converger->converge($node);
+    $converger->converge($node, 'SHA256:pinned');
 
     expect($caddy->converged)->toBeFalse();
 });
@@ -272,7 +339,7 @@ it('converts app-dev Caddy failures into node provisioning failures', function (
         appDevCaddy: $caddy,
     );
 
-    expect(fn () => $converger->converge($node))
+    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
         ->toThrow(function (NodeProvisioningException $exception) use ($runtimeException, $previous, $result): void {
             expect($exception->step)
                 ->toBe('caddy-config')
@@ -336,4 +403,57 @@ function test_keys(): SshKeyProvider
             return 'ssh-ed25519 GATEWAY';
         }
     };
+}
+
+/**
+ * @param list<string> $knownHostsWrites
+ * @param list<string> $sshCalls
+ */
+function fingerprint_guard_converger(array &$knownHostsWrites, array &$sshCalls): NativeNodeConverger
+{
+    $knownHosts = new class($knownHostsWrites) implements KnownHostsStore {
+        /** @param list<string> $writes */
+        public function __construct(
+            private array &$writes,
+        ) {}
+
+        public function path(): string
+        {
+            return '/home/orbit/.orbit/ssh/known_hosts';
+        }
+
+        public function put(string $host, int $port, HostKey $key): void
+        {
+            $this->writes[] = $key->fingerprint;
+        }
+    };
+    $ssh = new class($sshCalls) implements SshExecutor {
+        /** @param list<string> $calls */
+        public function __construct(
+            private array &$calls,
+        ) {}
+
+        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+        {
+            $this->calls[] = $connection->host;
+
+            return new CommandResult(0, '', '', 10, false);
+        }
+    };
+    $wireGuard = new class implements WireGuardPeerConverger {
+        public function converge(Node $node, SshConnection $connection): void {}
+    };
+    $caddy = new class implements AppDevCaddyManager {
+        public function converge(Node $node): void {}
+    };
+
+    return new NativeNodeConverger(
+        hostKeys: test_scanner(),
+        knownHosts: $knownHosts,
+        sshKeys: test_keys(),
+        ssh: $ssh,
+        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
+        wireGuard: $wireGuard,
+        appDevCaddy: $caddy,
+    );
 }
