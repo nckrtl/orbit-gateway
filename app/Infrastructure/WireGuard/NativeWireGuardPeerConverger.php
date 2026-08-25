@@ -113,8 +113,8 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     [Interface]
                     PrivateKey = $private_key
                     Address = $address
-                    PostUp = dns_link=\$(ip -o route get $dns_server_escaped | sed -n 's/.* dev \([^ ]*\).*/\1/p'); test -n "\$dns_link"; resolvectl dns "\$dns_link" $dns_server_escaped; resolvectl domain "\$dns_link" $domain_escaped
-                    PreDown = dns_link=\$(ip -o route get $dns_server_escaped | sed -n 's/.* dev \([^ ]*\).*/\1/p'); test -n "\$dns_link"; resolvectl revert "\$dns_link"
+                    PostUp = route=\$(ip -o route get $dns_server_escaped); [[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; dns_link=\${BASH_REMATCH[1]}; resolvectl dns "\$dns_link" $dns_server_escaped; resolvectl domain "\$dns_link" $domain_escaped
+                    PreDown = route=\$(ip -o route get $dns_server_escaped); [[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; dns_link=\${BASH_REMATCH[1]}; resolvectl revert "\$dns_link"
 
                     [Peer]
                     PublicKey = $server_public_key

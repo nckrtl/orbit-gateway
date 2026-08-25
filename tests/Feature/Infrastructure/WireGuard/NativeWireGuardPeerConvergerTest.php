@@ -22,6 +22,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
+/** @mago-expect lint:halstead This end-to-end interaction test keeps the command ordering in one observable flow. */
 it('validates a candidate config under /etc/wireguard before replacing the live server config', function (): void {
     $orbitHome = sys_get_temp_dir().'/orbit-vpn-'.Str::uuid();
     mkdir(directory: $orbitHome.'/wireguard', permissions: 0o700, recursive: true);
@@ -153,7 +154,9 @@ it('validates a candidate config under /etc/wireguard before replacing the live 
                 'mv -f -- "$candidate" /etc/wireguard/orbit.conf',
                 'printf -v dns_server_escaped \'%q\' "$dns_server"',
                 'printf -v domain_escaped \'%q\' "~$domain"',
-                'dns_link=\$(ip -o route get $dns_server_escaped',
+                'route=\$(ip -o route get $dns_server_escaped)',
+                '[[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]',
+                'dns_link=\${BASH_REMATCH[1]}',
                 'resolvectl dns "\$dns_link" $dns_server_escaped',
                 'resolvectl domain "\$dns_link" $domain_escaped',
                 'resolvectl revert "\$dns_link"',
@@ -163,6 +166,7 @@ it('validates a candidate config under /etc/wireguard before replacing the live 
                 'resolvectl dns %i',
                 'resolvectl domain %i',
                 'resolvectl revert %i',
+                '| sed ',
             );
     } finally {
         new Filesystem()->deleteDirectory($orbitHome);
