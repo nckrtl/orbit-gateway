@@ -45,7 +45,7 @@
             "Composer\\Config::disableProcessTimeout",
             "@php artisan dev"
         ],
-        "analyse": "vendor/bin/mago analyze app routes --reporting-format=medium",
+        "analyse": "vendor/bin/mago analyze app routes database/migrations --reporting-format=medium",
         "check": [
             "@test",
             "@format:check",
@@ -54,7 +54,7 @@
         ],
         "format": "vendor/bin/mago format",
         "format:check": "vendor/bin/mago format --check",
-        "lint": "vendor/bin/mago lint app routes tests --reporting-format=medium",
+        "lint": "vendor/bin/mago lint app routes database/migrations tests --reporting-format=medium",
         "test": "vendor/bin/pest --compact",
         "test:full": "vendor/bin/pest --no-tia --compact",
         "post-autoload-dump": [

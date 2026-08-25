@@ -7,5 +7,5 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
     Route::get('gateway/status', [GatewayStatusesController::class, 'show'])
-        ->name('gatewayStatus.show');
+        ->name('gateway:status');
 });
