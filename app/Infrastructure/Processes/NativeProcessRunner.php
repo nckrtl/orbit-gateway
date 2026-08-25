@@ -10,12 +10,13 @@ final readonly class NativeProcessRunner implements ProcessRunner
 {
     public function __construct(
         private int $maxOutputBytes = 65_536,
+        private ?CommandDeadline $deadline = null,
     ) {}
 
     public function run(ProcessInvocation $invocation): CommandResult
     {
         $process = new SymfonyProcess($invocation->arguments);
-        $process->setTimeout($invocation->timeout);
+        $process->setTimeout($this->deadline?->cap($invocation->timeout) ?? $invocation->timeout);
         $process->setInput($invocation->input);
 
         $stdout = '';

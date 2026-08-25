@@ -4,19 +4,45 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Shared\ResourceOperationException;
+use App\Infrastructure\Activity\CommandActivityInputSanitizer;
+use App\Infrastructure\Activity\CommandActivityTargetResolver;
+use App\Infrastructure\Processes\CommandDeadline;
 use App\Infrastructure\Processes\CommandResult;
 use App\Models\Activity;
 use App\Models\Node;
 use Closure;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
+/** @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware. */
 final class RecordCommandActivity
 {
+    public function __construct(
+        private readonly CommandDeadline $deadline,
+        private readonly CommandActivityInputSanitizer $inputSanitizer,
+        private readonly CommandActivityTargetResolver $targetResolver,
+    ) {}
+
     public function handle(Request $request, Closure $next): Response
+    {
+        $this->deadline->start(Config::float('orbit.command_timeout', 900.0));
+
+        try {
+            return $this->record($request, $next);
+        } finally {
+            $this->deadline->clear();
+        }
+    }
+
+    private function record(Request $request, Closure $next): Response
     {
         $startedAt = microtime(true);
         $activity = $this->start($request);
@@ -28,7 +54,7 @@ final class RecordCommandActivity
 
             return $response;
         } catch (Throwable $exception) {
-            $this->fail($activity, $exception, $startedAt);
+            $this->fail($activity, $request, $exception, $startedAt);
 
             throw $exception;
         }
@@ -47,7 +73,7 @@ final class RecordCommandActivity
             'properties' => [
                 'method' => $request->method(),
                 'path' => $request->path(),
-                'input' => $request->except(['password', 'private_key', 'secret', 'token']),
+                'input' => $this->inputSanitizer->sanitize($request->collect()->all()),
             ],
             'request_id' => is_string($requestId) ? $requestId : '',
             'command' => is_string($command) ? $command : 'unknown',
@@ -74,23 +100,40 @@ final class RecordCommandActivity
             'error_code' => $errorCode,
         ];
 
-        $activity->update($this->withResult($activity, $updates, $commandResult));
+        $activity->update($this->withTarget(
+            $request,
+            $this->withResult($activity, $updates, $commandResult),
+        ));
     }
 
-    private function fail(Activity $activity, Throwable $exception, float $startedAt): void
-    {
+    private function fail(
+        Activity $activity,
+        Request $request,
+        Throwable $exception,
+        float $startedAt,
+    ): void {
         $updates = [
             'status' => 'failed',
             'duration_ms' => $this->duration($startedAt),
             'error_code' => match (true) {
                 $exception instanceof ValidationException => 'validation.failed',
                 $exception instanceof NodeProvisioningException => $exception->errorCode,
+                $exception instanceof RuntimeConvergenceException => $exception->errorCode,
+                $exception instanceof ResourceOperationException => $exception->errorCode,
+                $exception instanceof ModelNotFoundException, $exception instanceof NotFoundHttpException => 'http.404',
                 default => 'gateway.unhandled',
             },
         ];
-        $result = $exception instanceof NodeProvisioningException ? $exception->result : null;
+        $result = match (true) {
+            $exception instanceof NodeProvisioningException => $exception->result,
+            $exception instanceof RuntimeConvergenceException => $exception->result,
+            default => null,
+        };
 
-        $activity->update($this->withResult($activity, $updates, $result));
+        $activity->update($this->withTarget(
+            $request,
+            $this->withResult($activity, $updates, $result),
+        ));
     }
 
     /**
@@ -136,14 +179,24 @@ final class RecordCommandActivity
         return $statusCode === 422 ? 'validation.failed' : "http.{$statusCode}";
     }
 
+    /**
+     * @param array<string, mixed> $updates
+     *
+     * @return array<string, mixed>
+     */
+    private function withTarget(Request $request, array $updates): array
+    {
+        $target = $this->targetResolver->resolve($request);
+
+        if ($target === null) {
+            return $updates;
+        }
+
+        return [...$updates, ...$target];
+    }
+
     private function redact(string $output): string
     {
-        $redacted = preg_replace(
-            pattern: '/(password|token|secret|private[_ -]?key)(\s*[=:]\s*)\S+/i',
-            replacement: '$1$2[REDACTED]',
-            subject: $output,
-        );
-
-        return is_string($redacted) ? $redacted : '';
+        return $this->inputSanitizer->redactText($output);
     }
 }

@@ -103,6 +103,7 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
             'caddy',
             'composer',
             'docker.io',
+            'openssl',
             'php8.5-curl',
             'php8.5-fpm',
             'php8.5-intl',
@@ -110,6 +111,11 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
             'php8.5-xml',
             'php8.5-zip',
             'unzip',
+        )
+        ->and($ssh->calls[0]['command']->input)
+        ->toContain(
+            'app_dev=$2',
+            'install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees',
         )
         ->and($ssh->calls[1]['connection']->user)
         ->toBe('orbit')

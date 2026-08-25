@@ -92,6 +92,8 @@ it('publishes complete validated FPM Caddy and certificate configurations throug
                 'listen = /run/php/orbit-gateway.sock',
                 'listen.group = caddy',
                 'listen.mode = 0660',
+                'request_terminate_timeout = 900s',
+                'php_admin_value[max_execution_time] = 900',
                 'php_admin_value[opcache.validate_timestamps] = 1',
             )
             ->and(file_get_contents($orbitHome.'/generated/gateway/Caddyfile'))
@@ -101,6 +103,9 @@ it('publishes complete validated FPM Caddy and certificate configurations throug
                 'root * /home/orbit/orbit-gateway/public',
                 'tls /etc/caddy/orbit-cert-current/gateway.pem /etc/caddy/orbit-cert-current/gateway.key',
                 'php_fastcgi unix//run/php/orbit-gateway.sock',
+                'dial_timeout 10s',
+                'read_timeout 900s',
+                'write_timeout 900s',
             )
             ->and($fpmStage?->input)
             ->toContain(

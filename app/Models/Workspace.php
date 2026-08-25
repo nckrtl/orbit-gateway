@@ -16,11 +16,17 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
  * @property string $branch
  * @property string $checkout_path
  * @property string|null $php_version
+ * @property string $hostname
  * @property LifecycleStatus $status
+ * @property string|null $failed_step
+ * @property string|null $error_code
  * @property-read Instance $instance
  */
 final class Workspace extends Model
 {
+    /** @var array<string, mixed> */
+    protected $attributes = ['status' => 'provisioning'];
+
     /** @var array<int, string> */
     protected $fillable = [
         'instance_id',

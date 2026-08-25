@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleAssignmentException;
+use App\Domain\Shared\ResourceOperationException;
 use App\Http\Middleware\EnsureRequestId;
 use App\Http\Middleware\RecordCommandActivity;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -77,6 +79,43 @@ return Application::configure(basePath: dirname(__DIR__))
                         'details' => ['step' => $exception->step],
                     ],
                 ], 502)
+                ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
+        });
+        $exceptions->render(function (RuntimeConvergenceException $exception, Request $request): JsonResponse {
+            $request->attributes->set('orbit.error_code', $exception->errorCode);
+            $request->attributes->set('orbit.command_result', $exception->result);
+            $requestId = $request->attributes->get('orbit.request_id');
+
+            if (! is_string($requestId) || $requestId === '') {
+                $requestId = $request->header('X-Orbit-Request-Id', '');
+            }
+
+            return response()
+                ->json([
+                    'error' => [
+                        'code' => $exception->errorCode,
+                        'message' => $exception->getMessage(),
+                        'details' => ['step' => $exception->step],
+                    ],
+                ], 502)
+                ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
+        });
+        $exceptions->render(function (ResourceOperationException $exception, Request $request): JsonResponse {
+            $request->attributes->set('orbit.error_code', $exception->errorCode);
+            $requestId = $request->attributes->get('orbit.request_id');
+
+            if (! is_string($requestId) || $requestId === '') {
+                $requestId = $request->header('X-Orbit-Request-Id', '');
+            }
+
+            return response()
+                ->json([
+                    'error' => [
+                        'code' => $exception->errorCode,
+                        'message' => $exception->getMessage(),
+                        'details' => [],
+                    ],
+                ], $exception->status)
                 ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
         });
         $exceptions->render(function (RoleAssignmentException $exception, Request $request): JsonResponse {

@@ -23,11 +23,13 @@ final readonly class NodeBootstrapCommandFactory
                 '-seu',
                 '--',
                 $this->keys->publicKey(),
+                $node->roles->pluck('role')->contains(RoleName::AppDev) ? '1' : '0',
                 ...$this->packages($node),
             ],
             input: <<<'BASH'
                 orbit_key=$1
-                shift
+                app_dev=$2
+                shift 2
 
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
@@ -38,6 +40,9 @@ final readonly class NodeBootstrapCommandFactory
                 fi
 
                 install -d -m 0700 -o orbit -g orbit /home/orbit/.ssh /home/orbit/.orbit
+                if [ "$app_dev" = 1 ]; then
+                    install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees
+                fi
                 touch /home/orbit/.ssh/authorized_keys
                 if ! grep -qxF "$orbit_key" /home/orbit/.ssh/authorized_keys; then
                     printf '%s\n' "$orbit_key" >> /home/orbit/.ssh/authorized_keys
@@ -75,6 +80,7 @@ final readonly class NodeBootstrapCommandFactory
                 'caddy',
                 'composer',
                 'docker.io',
+                'openssl',
                 'php8.5-cli',
                 'php8.5-curl',
                 'php8.5-fpm',
