@@ -4,24 +4,43 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Domain\Nodes\NodeProvisioningException;
+use App\Infrastructure\Processes\CommandResult;
 use App\Models\Activity;
 use App\Models\Node;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 
 final class RecordCommandActivity
 {
-    /** @mago-expect analysis:mixed-assignment Request attributes are an untyped boundary. */
     public function handle(Request $request, Closure $next): Response
     {
         $startedAt = microtime(true);
-        $requestId = $request->attributes->get('orbit.request_id');
-        $route = $request->route();
-        $command = $route->getName();
+        $activity = $this->start($request);
 
-        $activity = Activity::query()->create([
+        try {
+            /** @var Response $response */
+            $response = $next($request);
+            $this->complete($activity, $request, $response->getStatusCode(), $startedAt);
+
+            return $response;
+        } catch (Throwable $exception) {
+            $this->fail($activity, $exception, $startedAt);
+
+            throw $exception;
+        }
+    }
+
+    /** @mago-expect analysis:mixed-assignment Request attributes are an untyped boundary. */
+    private function start(Request $request): Activity
+    {
+        $requestId = $request->attributes->get('orbit.request_id');
+        $command = $request->route()->getName();
+
+        return Activity::query()->create([
             'log_name' => 'commands',
             'description' => is_string($command) ? $command : 'unknown',
             'event' => 'command',
@@ -36,28 +55,65 @@ final class RecordCommandActivity
             'caller_ip' => $request->ip(),
             'status' => 'running',
         ]);
+    }
 
-        try {
-            /** @var Response $response */
-            $response = $next($request);
-            $statusCode = $response->getStatusCode();
+    /** @mago-expect analysis:mixed-assignment Request attributes are an untyped boundary. */
+    private function complete(Activity $activity, Request $request, int $statusCode, float $startedAt): void
+    {
+        $requestErrorCode = $request->attributes->get('orbit.error_code');
+        $commandResult = $request->attributes->get('orbit.command_result');
+        $errorCode = null;
 
-            $activity->update([
-                'status' => $statusCode < 400 ? 'succeeded' : 'failed',
-                'duration_ms' => $this->duration($startedAt),
-                'error_code' => $statusCode < 400 ? null : $this->errorCode($statusCode),
-            ]);
-
-            return $response;
-        } catch (Throwable $exception) {
-            $activity->update([
-                'status' => 'failed',
-                'duration_ms' => $this->duration($startedAt),
-                'error_code' => 'gateway.unhandled',
-            ]);
-
-            throw $exception;
+        if ($statusCode >= 400) {
+            $errorCode = is_string($requestErrorCode) ? $requestErrorCode : $this->errorCode($statusCode);
         }
+
+        $updates = [
+            'status' => $statusCode < 400 ? 'succeeded' : 'failed',
+            'duration_ms' => $this->duration($startedAt),
+            'error_code' => $errorCode,
+        ];
+
+        $activity->update($this->withResult($activity, $updates, $commandResult));
+    }
+
+    private function fail(Activity $activity, Throwable $exception, float $startedAt): void
+    {
+        $updates = [
+            'status' => 'failed',
+            'duration_ms' => $this->duration($startedAt),
+            'error_code' => match (true) {
+                $exception instanceof ValidationException => 'validation.failed',
+                $exception instanceof NodeProvisioningException => $exception->errorCode,
+                default => 'gateway.unhandled',
+            },
+        ];
+        $result = $exception instanceof NodeProvisioningException ? $exception->result : null;
+
+        $activity->update($this->withResult($activity, $updates, $result));
+    }
+
+    /**
+     * @param array<string, mixed> $updates
+     *
+     * @return array<string, mixed>
+     */
+    private function withResult(Activity $activity, array $updates, mixed $result): array
+    {
+        if (! $result instanceof CommandResult) {
+            return $updates;
+        }
+
+        return [
+            ...$updates,
+            'exit_code' => $result->exitCode,
+            'properties' => [
+                ...($activity->properties?->toArray() ?? []),
+                'stdout' => $this->redact($result->stdout),
+                'stderr' => $this->redact($result->stderr),
+                'output_truncated' => $result->truncated,
+            ],
+        ];
     }
 
     private function callerNodeId(Request $request): ?int
@@ -78,5 +134,16 @@ final class RecordCommandActivity
     private function errorCode(int $statusCode): string
     {
         return $statusCode === 422 ? 'validation.failed' : "http.{$statusCode}";
+    }
+
+    private function redact(string $output): string
+    {
+        $redacted = preg_replace(
+            pattern: '/(password|token|secret|private[_ -]?key)(\s*[=:]\s*)\S+/i',
+            replacement: '$1$2[REDACTED]',
+            subject: $output,
+        );
+
+        return is_string($redacted) ? $redacted : '';
     }
 }

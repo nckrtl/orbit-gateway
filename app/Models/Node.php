@@ -13,7 +13,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $name
  * @property LifecycleStatus $status
  * @property string $public_ssh_host
+ * @property int $public_ssh_port
+ * @property string $ssh_user
  * @property string|null $wireguard_address
+ * @property string|null $wireguard_public_key
+ * @property string|null $wireguard_endpoint_override
+ * @property string|null $dns_server_override
+ * @property string|null $ssh_host_fingerprint
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, NodeRole> $roles
  */
 final class Node extends Model
 {
