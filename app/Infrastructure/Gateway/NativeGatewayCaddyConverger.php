@@ -100,12 +100,7 @@ final readonly class NativeGatewayCaddyConverger
                 fi
 
                 install -o root -g root -m 0644 -- "$gateway_fragment" "$candidate_directory/fragments/gateway.caddy"
-                awk '
-                    /^[[:space:]]*import[[:space:]]+\/etc\/caddy\/orbit\.d\/\*\.caddy[[:space:]]*$/ { next }
-                    /^[[:space:]]*import[[:space:]]+\/etc\/caddy\/orbit-versions\/[^/]+\/fragments\/\*\.caddy[[:space:]]*$/ { next }
-                    { print }
-                ' "$source_main" > "$candidate_directory/Caddyfile"
-                printf '\nimport %s/fragments/*.caddy\n' "$version_directory" >> "$candidate_directory/Caddyfile"
+                printf 'import %s/fragments/*.caddy\n' "$version_directory" > "$candidate_directory/Caddyfile"
                 chown -R root:root "$candidate_directory"
                 find "$candidate_directory" -type d -exec chmod 0755 {} +
                 find "$candidate_directory" -type f -exec chmod 0644 {} +

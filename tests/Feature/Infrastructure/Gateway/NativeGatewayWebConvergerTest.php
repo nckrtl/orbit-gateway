@@ -117,7 +117,10 @@ it('publishes complete validated FPM Caddy and certificate configurations throug
                 'source_main=$(readlink -f /etc/caddy/Caddyfile)',
                 'previous_fragments=$(dirname "$source_main")/fragments',
                 'orbit-versions',
+                'printf \'import %s/fragments/*.caddy\\n\' "$version_directory" > "$candidate_directory/Caddyfile"',
             )
+            ->not
+            ->toContain('"$source_main" > "$candidate_directory/Caddyfile"')
             ->and($caddyValidationIndex)
             ->toBeInt()
             ->toBeLessThan($caddyPublishIndex)
