@@ -10,4 +10,8 @@ $orbitHome = is_string($configuredHome) && $configuredHome !== ''
 
 return [
     'home' => rtrim(string: $orbitHome, characters: '/'),
+    'gateway_checkout' => rtrim(
+        string: env('ORBIT_GATEWAY_CHECKOUT', '/home/orbit/orbit-gateway'),
+        characters: '/',
+    ),
 ];

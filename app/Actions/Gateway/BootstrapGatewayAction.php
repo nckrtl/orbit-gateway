@@ -6,6 +6,8 @@ namespace App\Actions\Gateway;
 
 use App\Actions\Nodes\AssignRoleAction;
 use App\Data\Gateway\BootstrapGatewayData;
+use App\Domain\Gateway\GatewayVpnConverger;
+use App\Domain\Gateway\GatewayWebConverger;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Settings\SettingRepository;
@@ -16,54 +18,104 @@ use App\Infrastructure\Files\ProtectedFileWriter;
 use App\Infrastructure\Processes\ProcessInvocation;
 use App\Infrastructure\Processes\ProcessRunner;
 use App\Models\Node;
+use Throwable;
 
-/** @mago-expect lint:cyclomatic-complexity */
+/**
+ * @mago-expect lint:cyclomatic-complexity
+ * @mago-expect lint:excessive-parameter-list
+ */
 final readonly class BootstrapGatewayAction
 {
     public function __construct(
         private AssignRoleAction $assignRole,
+        private GatewayBootstrapIdentityValidator $identity,
         private SettingRepository $settings,
         private ProcessRunner $processes,
         private ProtectedFileWriter $files,
+        private GatewayVpnConverger $vpn,
+        private GatewayWebConverger $web,
         private string $orbitHome,
     ) {}
 
     public function execute(BootstrapGatewayData $data): Node
     {
-        $this->ensureDirectories();
-        $this->ensureSshKeys();
-        $wireGuardPublicKey = $this->ensureWireGuardKeys();
-        $this->ensureCertificateAuthority();
+        $this->identity->validate($data);
 
         $node = Node::query()->updateOrCreate(
             ['name' => $data->name],
             [
-                'status' => LifecycleStatus::Active,
+                'status' => LifecycleStatus::Provisioning,
                 'platform' => 'linux',
                 'architecture' => php_uname('m'),
                 'public_ssh_host' => $data->publicHost,
                 'public_ssh_port' => 22,
                 'ssh_user' => 'orbit',
                 'wireguard_address' => $data->wireguardAddress,
-                'wireguard_public_key' => $wireGuardPublicKey,
                 'failed_step' => null,
                 'error_code' => null,
             ],
         );
 
-        foreach ([RoleName::Gateway, RoleName::Vpn] as $role) {
-            $this->assignRole->execute($node, $role)->update(['status' => LifecycleStatus::Active]);
+        try {
+            foreach ([RoleName::Gateway, RoleName::Vpn] as $role) {
+                $this->assignRole
+                    ->execute($node, $role)
+                    ->update([
+                        'status' => LifecycleStatus::Provisioning,
+                        'failed_step' => null,
+                        'error_code' => null,
+                    ]);
+            }
+
+            $scope = new SettingScope(SettingScopeType::Gateway);
+            $this->settings->put($scope, 'vpn.subnet', $data->wireguardSubnet);
+            $this->settings->put($scope, 'vpn.port', (string) $data->wireguardPort);
+            $this->settings->put($scope, 'vpn.endpoint', $data->wireguardEndpoint);
+            $this->settings->put($scope, 'vpn.dns_server', $data->dnsServer);
+            $this->settings->put($scope, 'vpn.domain', $data->domain);
+            $this->settings->put($scope, 'vpn.private_interface', $data->privateInterface);
+
+            $this->ensureDirectories();
+            $this->ensureSshKeys();
+            $wireGuardPublicKey = $this->ensureWireGuardKeys();
+            $node->update(['wireguard_public_key' => $wireGuardPublicKey]);
+            $this->ensureCertificateAuthority();
+            $this->vpn->converge($node, $data);
+            $this->web->converge("{$data->name}.{$data->domain}", $data->wireguardAddress);
+        } catch (Throwable $exception) {
+            $failure = $exception instanceof NodeProvisioningException
+                ? $exception
+                : new NodeProvisioningException(
+                    step: 'unknown',
+                    errorCode: 'gateway.bootstrap_failed',
+                    message: 'Gateway bootstrap failed.',
+                    previous: $exception,
+                );
+            $this->markFailed($node, $failure);
+
+            throw $failure;
         }
 
-        $scope = new SettingScope(SettingScopeType::Gateway);
-        $this->settings->put($scope, 'vpn.subnet', $data->wireguardSubnet);
-        $this->settings->put($scope, 'vpn.port', (string) $data->wireguardPort);
-        $this->settings->put($scope, 'vpn.endpoint', $data->wireguardEndpoint);
-        $this->settings->put($scope, 'vpn.dns_server', $data->dnsServer);
-        $this->settings->put($scope, 'vpn.domain', $data->domain);
-        $this->settings->put($scope, 'vpn.private_interface', $data->privateInterface);
+        $active = [
+            'status' => LifecycleStatus::Active,
+            'failed_step' => null,
+            'error_code' => null,
+        ];
+        $node->update($active);
+        $node->roles()->update($active);
 
         return $node->load('roles');
+    }
+
+    private function markFailed(Node $node, NodeProvisioningException $exception): void
+    {
+        $failure = [
+            'status' => LifecycleStatus::Failed,
+            'failed_step' => $exception->step,
+            'error_code' => $exception->errorCode,
+        ];
+        $node->update($failure);
+        $node->roles()->update($failure);
     }
 
     private function ensureDirectories(): void
