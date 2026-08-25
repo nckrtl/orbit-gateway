@@ -17,6 +17,12 @@ use App\Models\Node;
 /** @mago-expect lint:excessive-parameter-list */
 final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConverger
 {
+    private const string GENERATED_SERVER_CONFIG_PATH = '/generated/wireguard/orbit.conf';
+
+    private const string CANDIDATE_SERVER_CONFIG_PATH = '/etc/wireguard/orbit-candidate.conf';
+
+    private const string LIVE_SERVER_CONFIG_PATH = '/etc/wireguard/orbit.conf';
+
     public function __construct(
         private VpnConfigurationRepository $configuration,
         private WireGuardServerConfigRenderer $serverRenderer,
@@ -60,19 +66,10 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
             $vpn,
             Node::query()->whereNotNull('wireguard_public_key')->get(),
         );
-        $generatedPath = rtrim(string: $this->orbitHome, characters: '/').'/generated/wireguard/orbit.conf';
+        $generatedPath = rtrim(string: $this->orbitHome, characters: '/').self::GENERATED_SERVER_CONFIG_PATH;
         $this->files->put($generatedPath, $serverConfig);
 
-        $this->runLocal(
-            'wireguard-server-validate',
-            'vpn.server_config_invalid',
-            ['sudo', 'wg-quick', 'strip', $generatedPath],
-        );
-        $this->runLocal(
-            'wireguard-server-install',
-            'vpn.server_config_install_failed',
-            ['sudo', 'install', '-D', '-m', '0600', '--', $generatedPath, '/etc/wireguard/orbit.conf'],
-        );
+        $this->installServerConfig($generatedPath);
         $this->runLocal(
             'wireguard-server-enable',
             'vpn.server_start_failed',
@@ -107,7 +104,8 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     dns_server=$5
                     domain=$6
                     private_key=$(cat /etc/wireguard/orbit.key)
-                    candidate=$(mktemp)
+                    candidate=/etc/wireguard/orbit-candidate.conf
+                    trap 'rm -f -- "$candidate"' EXIT
 
                     cat > "$candidate" <<EOF
                     [Interface]
@@ -123,9 +121,11 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     PersistentKeepalive = 25
                     EOF
 
+                    chown root:root "$candidate"
+                    chmod 0600 "$candidate"
                     wg-quick strip "$candidate" >/dev/null
-                    install -m 0600 -o root -g root "$candidate" /etc/wireguard/orbit.conf
-                    rm -f "$candidate"
+                    mv -f -- "$candidate" /etc/wireguard/orbit.conf
+                    trap - EXIT
                     systemctl enable wg-quick@orbit
                     systemctl restart wg-quick@orbit
                     wg show orbit public-key
@@ -143,6 +143,51 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
         }
     }
 
+    private function installServerConfig(string $generatedPath): void
+    {
+        try {
+            $this->runLocal(
+                'wireguard-server-install',
+                'vpn.server_config_install_failed',
+                [
+                    'sudo',
+                    'install',
+                    '-D',
+                    '-o',
+                    'root',
+                    '-g',
+                    'root',
+                    '-m',
+                    '0600',
+                    '--',
+                    $generatedPath,
+                    self::CANDIDATE_SERVER_CONFIG_PATH,
+                ],
+            );
+            $this->runLocal(
+                'wireguard-server-validate',
+                'vpn.server_config_invalid',
+                ['sudo', 'wg-quick', 'strip', self::CANDIDATE_SERVER_CONFIG_PATH],
+            );
+            $this->runLocal(
+                'wireguard-server-install',
+                'vpn.server_config_install_failed',
+                [
+                    'sudo',
+                    'mv',
+                    '-f',
+                    '--',
+                    self::CANDIDATE_SERVER_CONFIG_PATH,
+                    self::LIVE_SERVER_CONFIG_PATH,
+                ],
+            );
+        } catch (NodeProvisioningException $exception) {
+            $this->cleanupCandidateServerConfig();
+
+            throw $exception;
+        }
+    }
+
     /** @param non-empty-list<string> $arguments */
     private function runLocal(string $step, string $errorCode, array $arguments): void
     {
@@ -156,6 +201,17 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                 result: $result,
             );
         }
+    }
+
+    private function cleanupCandidateServerConfig(): void
+    {
+        $this->processes->run(new ProcessInvocation([
+            'sudo',
+            'rm',
+            '-f',
+            '--',
+            self::CANDIDATE_SERVER_CONFIG_PATH,
+        ]));
     }
 
     private function failure(
