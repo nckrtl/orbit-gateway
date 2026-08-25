@@ -155,7 +155,7 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
                 { print }
                 END { if (! replaced) exit 42 }
             ' "\$main_configuration" > "\$temporary_directory/php-fpm.conf"
-            "php-fpm\$version" -y "\$temporary_directory/php-fpm.conf" -t
+            sudo "php-fpm\$version" -y "\$temporary_directory/php-fpm.conf" -t
 
             if [ -s "\$temporary_directory/pool.d/orbit-scopes.conf" ]; then
                 candidate="\$pool_directory/.orbit-scopes.\$\$.candidate"

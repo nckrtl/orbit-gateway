@@ -144,7 +144,7 @@ it('installs selected PHP versions and validates a complete staged FPM configura
         ->and($publishCalls->first()?->input)
         ->toContain(
             'cp -- "$pool" "$temporary_directory/pool.d/"',
-            '"php-fpm$version" -y "$temporary_directory/php-fpm.conf" -t',
+            'sudo "php-fpm$version" -y "$temporary_directory/php-fpm.conf" -t',
             'sudo mv -fT -- "$candidate" "$managed_configuration"',
         );
 });
