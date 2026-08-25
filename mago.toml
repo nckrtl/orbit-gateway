@@ -1,0 +1,13 @@
+version = "1.47.4"
+php-version = "8.5"
+
+[source]
+paths = ["app", "bootstrap", "config", "database", "routes", "tests"]
+includes = ["vendor"]
+excludes = ["bootstrap/cache", "node_modules", "public/build", "storage"]
+
+[formatter]
+preset = "laravel"
+
+[linter]
+integrations = ["laravel", "pest", "phpunit"]

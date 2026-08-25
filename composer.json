@@ -1,0 +1,92 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "nckrtl/orbit-gateway",
+    "type": "project",
+    "description": "The Orbit infrastructure control plane.",
+    "keywords": ["infrastructure", "laravel", "orbit"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.5",
+        "laravel/framework": "^13.0",
+        "laravel/tinker": "^3.0",
+        "spatie/laravel-activitylog": "^5.1",
+        "spatie/laravel-data": "^4.23"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "carthage-software/mago": "^1.47",
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.6",
+        "pestphp/pest": "^5.1",
+        "pestphp/pest-plugin-laravel": "^5.0",
+        "phpunit/phpunit": "^13.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "setup": [
+            "composer install",
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
+            "@php artisan key:generate",
+            "@php -r '$root = getenv(\"ORBIT_HOME\") ?: getenv(\"HOME\").\"/.orbit\"; is_dir($root) || mkdir($root, 0700, true); file_exists($root.\"/gateway.sqlite\") || touch($root.\"/gateway.sqlite\");'",
+            "@php artisan migrate --force"
+        ],
+        "dev": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php artisan dev"
+        ],
+        "analyse": "vendor/bin/mago analyze app routes --reporting-format=medium",
+        "check": [
+            "@test",
+            "@format:check",
+            "@lint",
+            "@analyse"
+        ],
+        "format": "vendor/bin/mago format",
+        "format:check": "vendor/bin/mago format --check",
+        "lint": "vendor/bin/mago lint app routes tests --reporting-format=medium",
+        "test": "vendor/bin/pest --compact",
+        "test:full": "vendor/bin/pest --no-tia --compact",
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi"
+        ],
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-create-project-cmd": [
+            "@php artisan key:generate --ansi",
+            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
+            "@php artisan migrate --graceful --ansi"
+        ],
+        "pre-package-uninstall": [
+            "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
