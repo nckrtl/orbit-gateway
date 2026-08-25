@@ -9,6 +9,10 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->group(function (): void {
     Route::get('gateway/status', [GatewayStatusesController::class, 'show'])
         ->name('gateway:status');
+    Route::get('nodes', [NodesController::class, 'index'])
+        ->name('node.list');
+    Route::get('nodes/{node}', [NodesController::class, 'show'])
+        ->name('node.show');
     Route::post('nodes', [NodesController::class, 'store'])
         ->name('node:provision');
 });
