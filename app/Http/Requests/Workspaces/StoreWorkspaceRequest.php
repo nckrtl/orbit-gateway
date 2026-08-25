@@ -78,6 +78,10 @@ final class StoreWorkspaceRequest extends FormRequest
 
         $segments = explode('/', mb_substr($path, mb_strlen('/home/orbit/')));
 
+        if (preg_match('#\A/home/orbit/(?:apps(?:/|\z)|\.(?!orbit/worktrees/))#', $path) === 1) {
+            return false;
+        }
+
         foreach ($segments as $segment) {
             if ($segment === '' || $segment === '.' || $segment === '..') {
                 return false;

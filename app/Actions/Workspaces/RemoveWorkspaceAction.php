@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Workspaces;
 
 use App\Domain\AppDev\AppDevRuntimeConverger;
+use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
@@ -15,9 +16,20 @@ final readonly class RemoveWorkspaceAction
 {
     public function __construct(
         private AppDevRuntimeConverger $runtime,
+        private AppDevSourceOperationLock $sourceLock,
     ) {}
 
     public function execute(Workspace $workspace): Workspace
+    {
+        $workspace->loadMissing('instance.node');
+
+        return $this->sourceLock->synchronized(
+            $workspace->instance->node_id,
+            fn (): Workspace => $this->executeWithinSourceLock($workspace),
+        );
+    }
+
+    private function executeWithinSourceLock(Workspace $workspace): Workspace
     {
         if ($workspace->processes()->exists()) {
             throw new ResourceOperationException(
@@ -30,7 +42,7 @@ final readonly class RemoveWorkspaceAction
         $workspace->update(['status' => LifecycleStatus::Removing]);
 
         try {
-            $this->runtime->removeWorkspace($workspace->load('instance.node'));
+            $this->runtime->removeWorkspace($workspace);
         } catch (RuntimeConvergenceException $exception) {
             $this->markFailed($workspace, $exception);
 

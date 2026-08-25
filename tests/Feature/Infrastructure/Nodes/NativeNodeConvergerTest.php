@@ -91,6 +91,8 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toBe('root')
         ->and($ssh->calls[0]['command']->arguments)
         ->toContain(
+            'acl',
+            'attr',
             'caddy',
             'composer',
             'docker.io',
@@ -106,8 +108,18 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->and($ssh->calls[0]['command']->input)
         ->toContain(
             'app_dev=$2',
+            'install -d -m 0700 -o orbit -g orbit /home/orbit',
             'install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees',
+            'setfacl -m u:caddy:--x /home/orbit /home/orbit/apps /home/orbit/.orbit /home/orbit/.orbit/worktrees',
         )
+        ->and(mb_strpos(
+            haystack: $ssh->calls[0]['command']->input ?? '',
+            needle: 'install -d -m 0700 -o orbit -g orbit /home/orbit',
+        ))
+        ->toBeLessThan(mb_strpos(
+            haystack: $ssh->calls[0]['command']->input ?? '',
+            needle: 'setfacl -m u:caddy:--x /home/orbit',
+        ))
         ->and($ssh->calls[1]['connection']->user)
         ->toBe('orbit')
         ->and($ssh->calls[1]['command']->arguments)

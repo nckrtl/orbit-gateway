@@ -12,6 +12,7 @@ use App\Domain\AppDev\AppDevCertificateManager;
 use App\Domain\AppDev\AppDevPhpFpmManager;
 use App\Domain\AppDev\AppDevRuntimeConverger;
 use App\Domain\AppDev\AppDevSourceManager;
+use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Certificates\GatewayCertificateIssuer;
 use App\Domain\Certificates\LeafCertificateSigner;
@@ -21,6 +22,7 @@ use App\Domain\Nodes\NodeConverger;
 use App\Domain\Settings\SettingRepository;
 use App\Infrastructure\AppDev\DnsmasqPrivateDnsManager;
 use App\Infrastructure\AppDev\NativeAppDevRuntimeConverger;
+use App\Infrastructure\AppDev\NativeAppDevSourceOperationLock;
 use App\Infrastructure\AppDev\RemoteAppDevCaddyManager;
 use App\Infrastructure\AppDev\RemoteAppDevCertificateManager;
 use App\Infrastructure\AppDev\RemoteAppDevPhpFpmManager;
@@ -75,6 +77,12 @@ final class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(CommandDeadline::class);
+        $this->app->singleton(
+            AppDevSourceOperationLock::class,
+            static fn (): AppDevSourceOperationLock => new NativeAppDevSourceOperationLock(
+                rtrim(string: (string) config('orbit.home'), characters: '/').'/locks/app-dev-source',
+            ),
+        );
         $this->app->singleton(
             LeafCertificateSigner::class,
             static fn (): LeafCertificateSigner => new OpenSslLeafCertificateSigner(

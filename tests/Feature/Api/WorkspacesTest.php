@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\AppDev\AppDevRuntimeConverger;
+use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Instances\CertificateMode;
 use App\Domain\Nodes\RoleName;
@@ -171,6 +172,40 @@ describe('workspace API', function (): void {
             ->toContain('workspace-remove:1');
     });
 
+    it('deletes a workspace before releasing its per-node source lock', function (): void {
+        $workspace = create_workspace_for_api_test($this->instance);
+        $lock = new class($workspace) implements AppDevSourceOperationLock {
+            public int $calls = 0;
+
+            public bool $workspaceWasDeletedBeforeRelease = false;
+
+            public function __construct(
+                private readonly Workspace $workspace,
+            ) {}
+
+            public function synchronized(int $nodeId, Closure $operation): mixed
+            {
+                $this->calls++;
+                $result = $operation();
+                $this->workspaceWasDeletedBeforeRelease = ! Workspace::query()
+                    ->whereKey($this->workspace->id)
+                    ->exists();
+
+                return $result;
+            }
+        };
+        app()->instance(AppDevSourceOperationLock::class, $lock);
+
+        $this
+            ->deleteJson("/api/v1/workspaces/{$workspace->id}")
+            ->assertOk();
+
+        expect($lock->calls)
+            ->toBe(1)
+            ->and($lock->workspaceWasDeletedBeforeRelease)
+            ->toBeTrue();
+    });
+
     it('does not let two managed checkouts overlap on one node', function (): void {
         create_workspace_for_api_test($this->instance);
 
@@ -189,8 +224,8 @@ describe('workspace API', function (): void {
                 'name' => 'feature-three',
                 'checkout_path' => '/home/orbit/apps/acme',
             ])
-            ->assertConflict()
-            ->assertJsonPath('error.code', 'workspace.path_taken');
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'validation.failed');
 
         expect(Workspace::query()->count())
             ->toBe(1)
@@ -229,6 +264,9 @@ describe('workspace API', function (): void {
         'dot segment' => [['checkout_path' => '/home/orbit/worktrees/./feature'], 'checkout_path'],
         'repeated separator' => [['checkout_path' => '/home/orbit/worktrees//feature'], 'checkout_path'],
         'trailing separator' => [['checkout_path' => '/home/orbit/worktrees/feature/'], 'checkout_path'],
+        'SSH directory' => [['checkout_path' => '/home/orbit/.ssh/feature'], 'checkout_path'],
+        'Orbit SSH directory' => [['checkout_path' => '/home/orbit/.orbit/ssh/feature'], 'checkout_path'],
+        'app directory' => [['checkout_path' => '/home/orbit/apps/other/feature'], 'checkout_path'],
         'option branch' => [['branch' => '--upload-pack=bad'], 'branch'],
         'invalid php version' => [['php_version' => 'latest'], 'php_version'],
         'unavailable php version' => [['php_version' => '9.9'], 'php_version'],

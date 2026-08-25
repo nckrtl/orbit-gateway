@@ -39,9 +39,12 @@ final readonly class NodeBootstrapCommandFactory
                     useradd --create-home --shell /bin/bash orbit
                 fi
 
+                test "$(getent passwd orbit | cut -d: -f6)" = /home/orbit
+                install -d -m 0700 -o orbit -g orbit /home/orbit
                 install -d -m 0700 -o orbit -g orbit /home/orbit/.ssh /home/orbit/.orbit
                 if [ "$app_dev" = 1 ]; then
                     install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees
+                    setfacl -m u:caddy:--x /home/orbit /home/orbit/apps /home/orbit/.orbit /home/orbit/.orbit/worktrees
                 fi
                 touch /home/orbit/.ssh/authorized_keys
                 if ! grep -qxF "$orbit_key" /home/orbit/.ssh/authorized_keys; then
@@ -77,6 +80,8 @@ final readonly class NodeBootstrapCommandFactory
         if ($roles->contains(RoleName::AppDev) || $roles->contains(RoleName::AppProd)) {
             $packages = [
                 ...$packages,
+                'acl',
+                'attr',
                 'caddy',
                 'composer',
                 'docker.io',
