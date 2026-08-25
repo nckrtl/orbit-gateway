@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Nodes;
 
+use App\Domain\AppDev\AppDevCaddyManager;
+use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Nodes\RoleName;
 use App\Infrastructure\Ssh\HostKeyScanner;
 use App\Infrastructure\Ssh\KnownHostsStore;
 use App\Infrastructure\Ssh\RemoteCommand;
@@ -25,6 +28,7 @@ final readonly class NativeNodeConverger implements NodeConverger
         private SshExecutor $ssh,
         private NodeBootstrapCommandFactory $bootstrapCommand,
         private WireGuardPeerConverger $wireGuard,
+        private AppDevCaddyManager $appDevCaddy,
     ) {}
 
     public function converge(Node $node): void
@@ -100,6 +104,20 @@ final readonly class NativeNodeConverger implements NodeConverger
                 message: "Could not reach node [{$node->name}] through WireGuard.",
                 result: $privateVerification,
             );
+        }
+
+        if ($node->roles->pluck('role')->contains(RoleName::AppDev)) {
+            try {
+                $this->appDevCaddy->converge($node);
+            } catch (RuntimeConvergenceException $exception) {
+                throw new NodeProvisioningException(
+                    step: $exception->step,
+                    errorCode: $exception->errorCode,
+                    message: $exception->getMessage(),
+                    previous: $exception,
+                    result: $exception->result,
+                );
+            }
         }
 
         $node->update(['ssh_user' => 'orbit']);

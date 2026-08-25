@@ -7,6 +7,7 @@ use App\Domain\Certificates\LeafCertificateSigner;
 use App\Domain\Instances\CertificateMode;
 use App\Domain\Shared\LifecycleStatus;
 use App\Infrastructure\AppDev\AppDevCaddyConfigRenderer;
+use App\Infrastructure\AppDev\AppDevCaddyPublisher;
 use App\Infrastructure\AppDev\AppDevPhpFpmConfigRenderer;
 use App\Infrastructure\AppDev\AppDevSiteRepository;
 use App\Infrastructure\AppDev\AppDevSshExecutor;
@@ -26,6 +27,8 @@ use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
 use App\Models\Workspace;
+use Tests\Support\AppDevCaddyPublishHarness;
+use Tests\Support\AppDevCaddyPublishScenario;
 use Tests\Support\AppDevFakeProcessRunner;
 use Tests\Support\AppDevFakeSshExecutor;
 
@@ -232,13 +235,13 @@ it('publishes private Caddy and DNS configurations through complete preserved va
     expect($ssh->commands[0]->input)
         ->toContain(
             base64_encode($expectedCaddy),
-            'source_main=$(readlink -f /etc/caddy/Caddyfile)',
+            'source_main=$(readlink -f "$live_caddyfile")',
             'previous_fragments=$(dirname "$source_main")/fragments',
             'cp --preserve=mode,ownership -- "$fragment" "$candidate/fragments/"',
             'app-dev.caddy',
             "printf 'import fragments/*.caddy\n'",
             'caddy validate --config "$candidate/Caddyfile"',
-            'mv -fT -- "$candidate_link" /etc/caddy/Caddyfile',
+            'mv -fT -- "$candidate_link" "$live_caddyfile"',
         )
         ->and($processes->invocations)
         ->toHaveCount(1)
@@ -252,6 +255,81 @@ it('publishes private Caddy and DNS configurations through complete preserved va
             'dnsmasq --test --conf-file="$validation/dnsmasq.conf"',
             'mv -fT -- "$candidate" "$managed"',
         );
+});
+
+it('retires only the exact package-default caddyfile while preserving modified config and orbit fragments', function (): void {
+    $harness = new AppDevCaddyPublishHarness;
+
+    try {
+        $defaultResult = $harness->run(
+            publisher: zero_site_publisher($harness),
+            scenario: AppDevCaddyPublishScenario::packageDefault("package default\n", "package default\n"),
+        );
+
+        expect($defaultResult->exitCode)
+            ->toBe(0)
+            ->and($defaultResult->publishedFragments)
+            ->toHaveKey('app-dev.caddy')
+            ->not->toHaveKey('unmanaged.caddy');
+
+        $orbitResult = $harness->run(
+            publisher: zero_site_publisher($harness),
+            scenario: AppDevCaddyPublishScenario::orbitAggregate("import fragments/*.caddy\n", [
+                'custom.caddy' => "custom handler\n",
+                'app-dev.caddy' => "stale app-dev\n",
+            ]),
+        );
+
+        expect($orbitResult->exitCode)
+            ->toBe(0)
+            ->and($orbitResult->publishedFragments)
+            ->toHaveKey('app-dev.caddy')
+            ->toHaveKey('custom.caddy')
+            ->not
+            ->toHaveKey('unmanaged.caddy')
+            ->and($orbitResult->publishedFragments['custom.caddy'])
+            ->toBe("custom handler\n")
+            ->and($orbitResult->publishedFragments['app-dev.caddy'])
+            ->toBe("# Managed by Orbit.\n");
+
+        $modifiedResult = $harness->run(
+            publisher: zero_site_publisher($harness),
+            scenario: AppDevCaddyPublishScenario::modifiedConfig("modified config\n", "package default\n"),
+        );
+
+        expect($modifiedResult->exitCode)
+            ->toBe(0)
+            ->and($modifiedResult->publishedFragments)
+            ->toHaveKey('unmanaged.caddy')
+            ->and($modifiedResult->publishedFragments['unmanaged.caddy'])
+            ->toBe("modified config\n");
+    } finally {
+        $harness->cleanup();
+    }
+});
+
+it('leaves the live caddy aggregate unchanged when staged validation fails during zero-site publication', function (): void {
+    $harness = new AppDevCaddyPublishHarness;
+
+    try {
+        $result = $harness->run(
+            publisher: zero_site_publisher($harness),
+            scenario: AppDevCaddyPublishScenario::modifiedConfigWithValidationFailure(
+                "modified config\n",
+                "package default\n",
+            ),
+        );
+
+        expect($result->exitCode)
+            ->not
+            ->toBe(0)
+            ->and($result->liveMainAfter)
+            ->toBe("modified config\n")
+            ->and($result->publishedFragments)
+            ->toBeEmpty();
+    } finally {
+        $harness->cleanup();
+    }
 });
 
 it('keeps the live Caddy aggregate untouched when candidate validation fails', function (): void {
@@ -274,7 +352,7 @@ it('keeps the live Caddy aggregate untouched when candidate validation fails', f
     $validation = mb_strpos(haystack: $script, needle: 'caddy validate --config "$candidate/Caddyfile"');
     $liveSwitch = mb_strpos(
         haystack: $script,
-        needle: 'mv -fT -- "$candidate_link" /etc/caddy/Caddyfile',
+        needle: 'mv -fT -- "$candidate_link" "$live_caddyfile"',
     );
 
     expect($validation)
@@ -363,6 +441,15 @@ function source_manager(): array
     $ssh = new AppDevFakeSshExecutor;
 
     return [new RemoteAppDevSourceManager(app_dev_ssh($ssh)), $ssh];
+}
+
+function zero_site_publisher(AppDevCaddyPublishHarness $harness): AppDevCaddyPublisher
+{
+    return new AppDevCaddyPublisher(
+        versionsDirectory: $harness->etcCaddyPath('orbit-versions'),
+        liveCaddyfilePath: $harness->etcCaddyPath('Caddyfile'),
+        caddyServiceName: 'caddy',
+    );
 }
 
 function app_dev_ssh(AppDevFakeSshExecutor $ssh): AppDevSshExecutor
