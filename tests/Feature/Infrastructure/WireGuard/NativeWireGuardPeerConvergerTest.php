@@ -151,8 +151,19 @@ it('validates a candidate config under /etc/wireguard before replacing the live 
                 'candidate=/etc/wireguard/orbit-candidate.conf',
                 'wg-quick strip "$candidate" >/dev/null',
                 'mv -f -- "$candidate" /etc/wireguard/orbit.conf',
+                'printf -v dns_server_escaped \'%q\' "$dns_server"',
+                'printf -v domain_escaped \'%q\' "~$domain"',
+                'dns_link=\$(ip -o route get $dns_server_escaped',
+                'resolvectl dns "\$dns_link" $dns_server_escaped',
+                'resolvectl domain "\$dns_link" $domain_escaped',
+                'resolvectl revert "\$dns_link"',
             )
-            ->not->toContain('candidate=$(mktemp)');
+            ->not->toContain(
+                'candidate=$(mktemp)',
+                'resolvectl dns %i',
+                'resolvectl domain %i',
+                'resolvectl revert %i',
+            );
     } finally {
         new Filesystem()->deleteDirectory($orbitHome);
     }

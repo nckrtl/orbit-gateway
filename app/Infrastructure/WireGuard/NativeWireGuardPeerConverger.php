@@ -105,14 +105,16 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     domain=$6
                     private_key=$(cat /etc/wireguard/orbit.key)
                     candidate=/etc/wireguard/orbit-candidate.conf
+                    printf -v dns_server_escaped '%q' "$dns_server"
+                    printf -v domain_escaped '%q' "~$domain"
                     trap 'rm -f -- "$candidate"' EXIT
 
                     cat > "$candidate" <<EOF
                     [Interface]
                     PrivateKey = $private_key
                     Address = $address
-                    PostUp = resolvectl dns %i $dns_server; resolvectl domain %i ~$domain
-                    PreDown = resolvectl revert %i
+                    PostUp = dns_link=\$(ip -o route get $dns_server_escaped | sed -n 's/.* dev \([^ ]*\).*/\1/p'); test -n "\$dns_link"; resolvectl dns "\$dns_link" $dns_server_escaped; resolvectl domain "\$dns_link" $domain_escaped
+                    PreDown = dns_link=\$(ip -o route get $dns_server_escaped | sed -n 's/.* dev \([^ ]*\).*/\1/p'); test -n "\$dns_link"; resolvectl revert "\$dns_link"
 
                     [Peer]
                     PublicKey = $server_public_key

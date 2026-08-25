@@ -50,9 +50,18 @@ final readonly class VpnConfigurationRepository
             $peer->wireguard_endpoint_override ?? $this->settings->get($scope, 'vpn.endpoint')
                 ?? "{$server->public_ssh_host}:{$port}";
         $dnsServer = $peer->dns_server_override ?? $this->settings->get($scope, 'vpn.dns_server') ?? $serverAddress;
+        $domain = $this->settings->get($scope, 'vpn.domain') ?? 'orbit';
 
-        if ($endpoint === '' || ! is_string($dnsServer) || $dnsServer === '') {
-            throw $this->invalid('The WireGuard endpoint or DNS server is invalid.');
+        if ($endpoint === '') {
+            throw $this->invalid('The WireGuard endpoint is invalid.');
+        }
+
+        if (! is_string($dnsServer) || filter_var($dnsServer, FILTER_VALIDATE_IP) === false) {
+            throw $this->invalid('The DNS server is invalid.');
+        }
+
+        if (filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+            throw $this->invalid('The private DNS domain is invalid.');
         }
 
         return new VpnConfiguration(
@@ -62,7 +71,7 @@ final readonly class VpnConfigurationRepository
             port: $port,
             endpoint: $endpoint,
             dnsServer: $dnsServer,
-            domain: $this->settings->get($scope, 'vpn.domain') ?? 'orbit',
+            domain: $domain,
             serverAddress: "{$serverAddress}/{$prefixLength}",
             peerAddress: "{$peerAddress}/{$prefixLength}",
             serverPrivateKey: $serverPrivateKey,
