@@ -20,6 +20,7 @@ final readonly class AppDevCaddyPublisher
 
         return new RemoteCommand(
             arguments: [
+                'sudo',
                 'bash',
                 '-seu',
                 '--',
@@ -39,13 +40,13 @@ final readonly class AppDevCaddyPublisher
                 published_installed=0
                 live_switched=0
                 cleanup() {
-                    sudo rm -rf -- "\$candidate" "\$candidate_link"
+                    rm -rf -- "\$candidate" "\$candidate_link"
                     if [ "\$published_installed" = 1 ] && [ "\$live_switched" = 0 ]; then
-                        sudo rm -rf -- "\$published"
+                        rm -rf -- "\$published"
                     fi
                 }
                 trap cleanup EXIT
-                sudo install -d -o root -g caddy -m 0750 -- "\$versions" "\$candidate/fragments"
+                install -d -o root -g caddy -m 0750 -- "\$versions" "\$candidate/fragments"
                 source_main=\$(readlink -f "\$live_caddyfile")
                 test -f "\$source_main"
                 previous_fragments=\$(dirname "\$source_main")/fragments
@@ -58,7 +59,7 @@ final readonly class AppDevCaddyPublisher
                                 continue
                             fi
 
-                            sudo cp --preserve=mode,ownership -- "\$fragment" "\$candidate/fragments/"
+                            cp --preserve=mode,ownership -- "\$fragment" "\$candidate/fragments/"
                         done
                         ;;
                     *)
@@ -72,24 +73,24 @@ final readonly class AppDevCaddyPublisher
                         fi
 
                         if [ "\$preserve_source_main" = 1 ]; then
-                            sudo cp --preserve=mode,ownership -- "\$source_main" "\$candidate/fragments/unmanaged.caddy"
+                            cp --preserve=mode,ownership -- "\$source_main" "\$candidate/fragments/unmanaged.caddy"
                         fi
                         ;;
                 esac
                 printf '%s' '{$encoded}' | base64 --decode | \
-                    sudo tee "\$candidate/fragments/app-dev.caddy" >/dev/null
-                printf 'import fragments/*.caddy\n' | sudo tee "\$candidate/Caddyfile" >/dev/null
-                sudo chown -R root:caddy "\$candidate"
-                sudo find "\$candidate" -type d -exec chmod 0750 {} +
-                sudo find "\$candidate" -type f -exec chmod 0640 {} +
-                sudo caddy validate --config "\$candidate/Caddyfile" --adapter caddyfile
-                sudo mv -fT -- "\$candidate" "\$published"
+                    tee "\$candidate/fragments/app-dev.caddy" >/dev/null
+                printf 'import fragments/*.caddy\n' | tee "\$candidate/Caddyfile" >/dev/null
+                chown -R root:caddy "\$candidate"
+                find "\$candidate" -type d -exec chmod 0750 {} +
+                find "\$candidate" -type f -exec chmod 0640 {} +
+                caddy validate --config "\$candidate/Caddyfile" --adapter caddyfile
+                mv -fT -- "\$candidate" "\$published"
                 published_installed=1
-                sudo ln -s -- "\$published/Caddyfile" "\$candidate_link"
-                sudo mv -fT -- "\$candidate_link" "\$live_caddyfile"
+                ln -s -- "\$published/Caddyfile" "\$candidate_link"
+                mv -fT -- "\$candidate_link" "\$live_caddyfile"
                 live_switched=1
-                sudo systemctl enable "\$caddy_service"
-                sudo systemctl reload-or-restart "\$caddy_service"
+                systemctl enable "\$caddy_service"
+                systemctl reload-or-restart "\$caddy_service"
                 BASH,
         );
     }

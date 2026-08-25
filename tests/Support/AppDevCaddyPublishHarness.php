@@ -41,7 +41,7 @@ final class AppDevCaddyPublishHarness
         $this->writeShims($scenario);
 
         $command = $publisher->command("# Managed by Orbit.\n", 'test-version');
-        $process = new Process($command->arguments, $this->root, [
+        $process = new Process(array_slice(array: $command->arguments, offset: 1), $this->root, [
             'PATH' => $this->root.'/bin:'.getenv('PATH'),
             'HARNESS_PACKAGE_DEFAULT_MD5' => $scenario->packageDefault === null ? '' : md5($scenario->packageDefault),
             'HARNESS_VALIDATE_LOG' => $this->root.'/validate.log',
@@ -107,7 +107,10 @@ final class AppDevCaddyPublishHarness
 
     private function writeShims(AppDevCaddyPublishScenario $scenario): void
     {
-        file_put_contents(filename: $this->root.'/bin/sudo', data: "#!/usr/bin/env bash\nexec \"\$@\"\n");
+        file_put_contents(
+            filename: $this->root.'/bin/sudo',
+            data: "#!/usr/bin/env bash\nprintf 'unexpected nested sudo\\n' >&2\nexit 97\n",
+        );
         file_put_contents(
             filename: $this->root.'/bin/install',
             data: <<<'BASH'

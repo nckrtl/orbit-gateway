@@ -243,6 +243,8 @@ it('publishes private Caddy and DNS configurations through complete preserved va
             'caddy validate --config "$candidate/Caddyfile"',
             'mv -fT -- "$candidate_link" "$live_caddyfile"',
         )
+        ->and(array_slice(array: $ssh->commands[0]->arguments, offset: 0, length: 3))
+        ->toBe(['sudo', 'bash', '-seu'])
         ->and($processes->invocations)
         ->toHaveCount(1)
         ->and($processes->invocations[0]->input)
@@ -362,7 +364,7 @@ it('keeps the live Caddy aggregate untouched when candidate validation fails', f
         ->and($validation)
         ->toBeLessThan($liveSwitch)
         ->and($script)
-        ->toContain('sudo rm -rf -- "$candidate" "$candidate_link"');
+        ->toContain('rm -rf -- "$candidate" "$candidate_link"');
 });
 
 it('keeps the live DNS fragment untouched when effective validation fails', function (): void {
