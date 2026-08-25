@@ -256,6 +256,7 @@ it('publishes private Caddy and DNS configurations through complete preserved va
             'sed "s#/etc/dnsmasq.d#$validation/fragments#g" /etc/dnsmasq.conf',
             'dnsmasq --test --conf-file="$validation/dnsmasq.conf"',
             'mv -fT -- "$candidate" "$managed"',
+            'systemctl restart dnsmasq',
         );
 });
 
@@ -390,13 +391,18 @@ it('keeps the live DNS fragment untouched when effective validation fails', func
         haystack: $script,
         needle: 'mv -fT -- "$candidate" "$managed"',
     );
+    $restart = mb_strpos(haystack: $script, needle: 'systemctl restart dnsmasq');
 
     expect($validation)
         ->toBeInt()
         ->and($liveSwitch)
         ->toBeInt()
+        ->and($restart)
+        ->toBeInt()
         ->and($validation)
         ->toBeLessThan($liveSwitch)
+        ->and($liveSwitch)
+        ->toBeLessThan($restart)
         ->and($script)
         ->toContain('trap \'rm -rf -- "$validation"; rm -f -- "$candidate"\' EXIT');
 });

@@ -55,7 +55,7 @@ final readonly class DnsmasqPrivateDnsManager implements PrivateDnsManager
                 dnsmasq --test --conf-file="\$validation/dnsmasq.conf"
                 install -o root -g root -m 0644 -- "\$validation/fragments/orbit-records.conf" "\$candidate"
                 mv -fT -- "\$candidate" "\$managed"
-                systemctl reload-or-restart dnsmasq
+                systemctl restart dnsmasq
                 BASH,
         ));
 
