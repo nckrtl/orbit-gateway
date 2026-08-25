@@ -73,10 +73,17 @@ final readonly class NodeBootstrapCommandFactory
             $packages = [
                 ...$packages,
                 'caddy',
+                'composer',
                 'docker.io',
                 'php8.5-cli',
+                'php8.5-curl',
                 'php8.5-fpm',
+                'php8.5-intl',
+                'php8.5-mbstring',
                 'php8.5-sqlite3',
+                'php8.5-xml',
+                'php8.5-zip',
+                'unzip',
             ];
         }
 

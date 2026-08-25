@@ -99,7 +99,18 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->and($ssh->calls[0]['connection']->user)
         ->toBe('root')
         ->and($ssh->calls[0]['command']->arguments)
-        ->toContain('caddy', 'docker.io', 'php8.5-fpm')
+        ->toContain(
+            'caddy',
+            'composer',
+            'docker.io',
+            'php8.5-curl',
+            'php8.5-fpm',
+            'php8.5-intl',
+            'php8.5-mbstring',
+            'php8.5-xml',
+            'php8.5-zip',
+            'unzip',
+        )
         ->and($ssh->calls[1]['connection']->user)
         ->toBe('orbit')
         ->and($ssh->calls[1]['command']->arguments)
