@@ -95,6 +95,7 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     $vpn->subnet,
                     $vpn->dnsServer,
                     $vpn->domain,
+                    $vpn->dnsThroughWireGuard ? 'wireguard' : 'underlay',
                 ],
                 input: <<<'BASH'
                     server_public_key=$1
@@ -103,18 +104,37 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     subnet=$4
                     dns_server=$5
                     domain=$6
+                    dns_mode=$7
                     private_key=$(cat /etc/wireguard/orbit.key)
                     candidate=/etc/wireguard/orbit-candidate.conf
+                    dns_state=/etc/wireguard/orbit.dns-link
                     printf -v dns_server_escaped '%q' "$dns_server"
                     printf -v domain_escaped '%q' "~$domain"
                     trap 'rm -f -- "$candidate"' EXIT
+
+                    case "$dns_mode" in
+                        wireguard|underlay) ;;
+                        *) exit 1 ;;
+                    esac
+
+                    if [ -s "$dns_state" ]; then
+                        old_dns_link=$(cat "$dns_state")
+                        if [[ "$old_dns_link" =~ ^[A-Za-z0-9_.:+-]+$ ]]; then
+                            resolvectl revert "$old_dns_link" || true
+                        fi
+                        rm -f -- "$dns_state"
+                    fi
+
+                    dns_hooks=
+                    if [ "$dns_mode" = wireguard ]; then
+                        dns_hooks="PostUp = resolvectl dns %i $dns_server_escaped; resolvectl domain %i $domain_escaped"$'\n'"PreDown = resolvectl revert %i"
+                    fi
 
                     cat > "$candidate" <<EOF
                     [Interface]
                     PrivateKey = $private_key
                     Address = $address
-                    PostUp = route=\$(ip -o route get $dns_server_escaped); [[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; dns_link=\${BASH_REMATCH[1]}; resolvectl dns "\$dns_link" $dns_server_escaped; resolvectl domain "\$dns_link" $domain_escaped
-                    PreDown = route=\$(ip -o route get $dns_server_escaped); [[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; dns_link=\${BASH_REMATCH[1]}; resolvectl revert "\$dns_link"
+                    $dns_hooks
 
                     [Peer]
                     PublicKey = $server_public_key
@@ -130,6 +150,22 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     trap - EXIT
                     systemctl enable wg-quick@orbit
                     systemctl restart wg-quick@orbit
+
+                    if [ "$dns_mode" = underlay ]; then
+                        route=$(ip -o route get "$dns_server")
+                        if [[ "$route" =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; then
+                            dns_link=${BASH_REMATCH[1]}
+                        else
+                            echo 'Could not resolve DNS interface.' >&2
+                            exit 1
+                        fi
+                        resolvectl dns "$dns_link" "$dns_server"
+                        resolvectl domain "$dns_link" "~$domain"
+                    else
+                        dns_link=orbit
+                    fi
+
+                    printf '%s\n' "$dns_link" > "$dns_state"
                     wg show orbit public-key
                     BASH,
             ),

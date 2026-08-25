@@ -16,6 +16,7 @@ final readonly class VpnConfiguration
         public int $port,
         public string $endpoint,
         public string $dnsServer,
+        public bool $dnsThroughWireGuard,
         public string $domain,
         public string $serverAddress,
         public string $peerAddress,

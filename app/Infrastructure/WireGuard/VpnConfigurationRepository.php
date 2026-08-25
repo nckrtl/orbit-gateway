@@ -71,6 +71,7 @@ final readonly class VpnConfigurationRepository
             port: $port,
             endpoint: $endpoint,
             dnsServer: $dnsServer,
+            dnsThroughWireGuard: $this->subnetContains($subnet, $prefixLength, $dnsServer),
             domain: $domain,
             serverAddress: "{$serverAddress}/{$prefixLength}",
             peerAddress: "{$peerAddress}/{$prefixLength}",
@@ -89,6 +90,20 @@ final readonly class VpnConfigurationRepository
         }
 
         return $prefix;
+    }
+
+    private function subnetContains(string $subnet, int $prefixLength, string $address): bool
+    {
+        $network = ip2long(explode(separator: '/', string: $subnet, limit: 2)[0]);
+        $candidate = ip2long($address);
+
+        if ($network === false || $candidate === false) {
+            return false;
+        }
+
+        $mask = -1 << (32 - $prefixLength);
+
+        return ($network & $mask) === ($candidate & $mask);
     }
 
     private function key(string $name): string

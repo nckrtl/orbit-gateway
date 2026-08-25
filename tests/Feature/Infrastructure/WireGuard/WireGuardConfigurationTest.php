@@ -49,6 +49,8 @@ it('resolves peer overrides and renders the complete server peer set', function 
             ->toBe('10.0.0.2:51820')
             ->and($vpn->dnsServer)
             ->toBe('10.0.0.2')
+            ->and($vpn->dnsThroughWireGuard)
+            ->toBeFalse()
             ->and($vpn->peerAddress)
             ->toBe('10.44.0.2/24')
             ->and($rendered)
@@ -93,6 +95,11 @@ it('rejects unsafe DNS and domain values before rendering peer shell hooks', fun
 
         expect(fn () => $configuration->forPeer($peer))
             ->toThrow(NodeProvisioningException::class, 'The DNS server is invalid.');
+
+        $peer->update(['dns_server_override' => null]);
+
+        expect($configuration->forPeer($peer)->dnsThroughWireGuard)
+            ->toBeTrue();
 
         $peer->update(['dns_server_override' => '10.0.0.2']);
         $settings->put($scope, 'vpn.domain', 'orbit; touch /tmp/orbit-injected');

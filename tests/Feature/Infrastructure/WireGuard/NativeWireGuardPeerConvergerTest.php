@@ -154,20 +154,27 @@ it('validates a candidate config under /etc/wireguard before replacing the live 
                 'mv -f -- "$candidate" /etc/wireguard/orbit.conf',
                 'printf -v dns_server_escaped \'%q\' "$dns_server"',
                 'printf -v domain_escaped \'%q\' "~$domain"',
-                'route=\$(ip -o route get $dns_server_escaped)',
-                '[[ \$route =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]',
-                'dns_link=\${BASH_REMATCH[1]}',
-                'resolvectl dns "\$dns_link" $dns_server_escaped',
-                'resolvectl domain "\$dns_link" $domain_escaped',
-                'resolvectl revert "\$dns_link"',
+                'dns_mode=$7',
+                'dns_state=/etc/wireguard/orbit.dns-link',
+                'if [ "$dns_mode" = wireguard ]; then',
+                'PostUp = resolvectl dns %i $dns_server_escaped; resolvectl domain %i $domain_escaped',
+                'PreDown = resolvectl revert %i',
+                'route=$(ip -o route get "$dns_server")',
+                'if [[ "$route" =~ [[:space:]]dev[[:space:]]([^[:space:]]+) ]]; then',
+                'Could not resolve DNS interface.',
+                'resolvectl dns "$dns_link" "$dns_server"',
+                'resolvectl domain "$dns_link" "~$domain"',
+                'printf \'%s\\n\' "$dns_link" > "$dns_state"',
             )
             ->not->toContain(
                 'candidate=$(mktemp)',
-                'resolvectl dns %i',
-                'resolvectl domain %i',
-                'resolvectl revert %i',
+                'PostUp = route=',
+                'PreDown = route=',
                 '| sed ',
             );
+
+        expect(array_slice($ssh->commands[1]->arguments, -1))
+            ->toBe(['underlay']);
     } finally {
         new Filesystem()->deleteDirectory($orbitHome);
     }
