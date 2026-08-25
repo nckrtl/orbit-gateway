@@ -148,7 +148,35 @@ final class AppDevCaddyPublishHarness
         );
         file_put_contents(
             filename: $this->root.'/bin/caddy',
-            data: "#!/usr/bin/env bash\nprintf 'validate %s\\n' \"\$*\" >> \"\${HARNESS_VALIDATE_LOG}\"\nif [ \"\${HARNESS_FAIL_VALIDATION}\" = 1 ]; then\n  exit 1\nfi\nexit 0\n",
+            data: <<<'BASH'
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf 'validate %s\n' "$*" >> "${HARNESS_VALIDATE_LOG}"
+                config=
+
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = --config ]; then
+                    config=$2
+                    break
+                  fi
+
+                  shift
+                done
+
+                test -n "$config"
+                test -f "$config"
+                import_pattern=$(awk '$1 == "import" { print $2; exit }' "$config")
+
+                if [ -n "$import_pattern" ]; then
+                  compgen -G "$import_pattern" >/dev/null
+                fi
+
+                if [ "${HARNESS_FAIL_VALIDATION}" = 1 ]; then
+                  exit 1
+                fi
+
+                exit 0
+                BASH,
         );
         file_put_contents(filename: $this->root.'/bin/systemctl', data: "#!/usr/bin/env bash\nexit 0\n");
         file_put_contents(filename: $this->root.'/bin/chown', data: "#!/usr/bin/env bash\nexit 0\n");

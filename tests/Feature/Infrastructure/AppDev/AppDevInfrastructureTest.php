@@ -239,8 +239,8 @@ it('publishes private Caddy and DNS configurations through complete preserved va
             'previous_fragments=$(dirname "$source_main")/fragments',
             'cp --preserve=mode,ownership -- "$fragment" "$candidate/fragments/"',
             'app-dev.caddy',
-            "printf 'import fragments/*.caddy\n'",
-            'caddy validate --config "$candidate/Caddyfile"',
+            "printf 'import %s/%s/fragments/*.caddy\n' \"\$versions\" \"\$version\"",
+            'caddy validate --config "$published/Caddyfile"',
             'mv -fT -- "$candidate_link" "$live_caddyfile"',
         )
         ->and(array_slice(array: $ssh->commands[0]->arguments, offset: 0, length: 3))
@@ -272,7 +272,10 @@ it('retires only the exact package-default caddyfile while preserving modified c
             ->toBe(0)
             ->and($defaultResult->publishedFragments)
             ->toHaveKey('app-dev.caddy')
-            ->not->toHaveKey('unmanaged.caddy');
+            ->not
+            ->toHaveKey('unmanaged.caddy')
+            ->and($defaultResult->liveMainAfter)
+            ->toBe('import '.$harness->etcCaddyPath('orbit-versions/test-version/fragments/*.caddy')."\n");
 
         $orbitResult = $harness->run(
             publisher: zero_site_publisher($harness),
@@ -351,7 +354,7 @@ it('keeps the live Caddy aggregate untouched when candidate validation fails', f
         });
 
     $script = $ssh->commands[0]->input ?? '';
-    $validation = mb_strpos(haystack: $script, needle: 'caddy validate --config "$candidate/Caddyfile"');
+    $validation = mb_strpos(haystack: $script, needle: 'caddy validate --config "$published/Caddyfile"');
     $liveSwitch = mb_strpos(
         haystack: $script,
         needle: 'mv -fT -- "$candidate_link" "$live_caddyfile"',

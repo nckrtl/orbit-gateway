@@ -79,13 +79,14 @@ final readonly class AppDevCaddyPublisher
                 esac
                 printf '%s' '{$encoded}' | base64 --decode | \
                     tee "\$candidate/fragments/app-dev.caddy" >/dev/null
-                printf 'import fragments/*.caddy\n' | tee "\$candidate/Caddyfile" >/dev/null
+                printf 'import %s/%s/fragments/*.caddy\n' "\$versions" "\$version" | \
+                    tee "\$candidate/Caddyfile" >/dev/null
                 chown -R root:caddy "\$candidate"
                 find "\$candidate" -type d -exec chmod 0750 {} +
                 find "\$candidate" -type f -exec chmod 0640 {} +
-                caddy validate --config "\$candidate/Caddyfile" --adapter caddyfile
                 mv -fT -- "\$candidate" "\$published"
                 published_installed=1
+                caddy validate --config "\$published/Caddyfile" --adapter caddyfile
                 ln -s -- "\$published/Caddyfile" "\$candidate_link"
                 mv -fT -- "\$candidate_link" "\$live_caddyfile"
                 live_switched=1
