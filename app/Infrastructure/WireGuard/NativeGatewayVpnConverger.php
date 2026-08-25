@@ -19,6 +19,10 @@ final readonly class NativeGatewayVpnConverger implements GatewayVpnConverger
 
     private const string LIVE_CONFIG = '/etc/wireguard/orbit.conf';
 
+    private const string FORWARDING_CANDIDATE = '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate';
+
+    private const string FORWARDING_CONFIG = '/etc/sysctl.d/90-orbit-wireguard-forwarding.conf';
+
     public function __construct(
         private WireGuardServerConfigRenderer $renderer,
         private ProtectedFileWriter $files,
@@ -53,6 +57,9 @@ final readonly class NativeGatewayVpnConverger implements GatewayVpnConverger
                 Node::query()->whereNotNull('wireguard_public_key')->get(),
             ),
         );
+        $generatedForwardingPath =
+            rtrim(string: $this->orbitHome, characters: '/').'/generated/wireguard/90-orbit-forwarding.conf';
+        $this->files->put($generatedForwardingPath, "net.ipv4.ip_forward=1\n");
 
         try {
             $this->run(
@@ -77,6 +84,41 @@ final readonly class NativeGatewayVpnConverger implements GatewayVpnConverger
                 step: 'wireguard-server-validate',
                 errorCode: 'vpn.server_config_invalid',
                 arguments: ['sudo', 'wg-quick', 'strip', self::CANDIDATE_CONFIG],
+            );
+            $this->run(
+                step: 'wireguard-forwarding-install',
+                errorCode: 'vpn.forwarding_config_install_failed',
+                arguments: [
+                    'sudo',
+                    'install',
+                    '-D',
+                    '-o',
+                    'root',
+                    '-g',
+                    'root',
+                    '-m',
+                    '0644',
+                    '--',
+                    $generatedForwardingPath,
+                    self::FORWARDING_CANDIDATE,
+                ],
+            );
+            $this->run(
+                step: 'wireguard-forwarding-apply',
+                errorCode: 'vpn.forwarding_config_invalid',
+                arguments: ['sudo', 'sysctl', '-p', self::FORWARDING_CANDIDATE],
+            );
+            $this->run(
+                step: 'wireguard-forwarding-install',
+                errorCode: 'vpn.forwarding_config_install_failed',
+                arguments: [
+                    'sudo',
+                    'mv',
+                    '-f',
+                    '--',
+                    self::FORWARDING_CANDIDATE,
+                    self::FORWARDING_CONFIG,
+                ],
             );
             $this->run(
                 step: 'wireguard-server-install',
@@ -151,6 +193,7 @@ final readonly class NativeGatewayVpnConverger implements GatewayVpnConverger
             '-f',
             '--',
             self::CANDIDATE_CONFIG,
+            self::FORWARDING_CANDIDATE,
         ]));
     }
 

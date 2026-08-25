@@ -33,6 +33,8 @@ it('activates the gateway WireGuard address through a validated atomic server co
             )
             ->not
             ->toContain('[Peer]')
+            ->and(file_get_contents($orbitHome.'/generated/wireguard/90-orbit-forwarding.conf'))
+            ->toBe("net.ipv4.ip_forward=1\n")
             ->and(
                 Collection::make($processes->calls)
                     ->map(static fn (ProcessInvocation $call): array => $call->arguments)
@@ -54,6 +56,34 @@ it('activates the gateway WireGuard address through a validated atomic server co
                     '/etc/wireguard/orbit-candidate.conf',
                 ],
                 ['sudo', 'wg-quick', 'strip', '/etc/wireguard/orbit-candidate.conf'],
+                [
+                    'sudo',
+                    'install',
+                    '-D',
+                    '-o',
+                    'root',
+                    '-g',
+                    'root',
+                    '-m',
+                    '0644',
+                    '--',
+                    $orbitHome.'/generated/wireguard/90-orbit-forwarding.conf',
+                    '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+                ],
+                [
+                    'sudo',
+                    'sysctl',
+                    '-p',
+                    '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+                ],
+                [
+                    'sudo',
+                    'mv',
+                    '-f',
+                    '--',
+                    '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+                    '/etc/sysctl.d/90-orbit-wireguard-forwarding.conf',
+                ],
                 [
                     'sudo',
                     'mv',
@@ -95,7 +125,67 @@ it('does not replace or start the gateway WireGuard service when validation fail
             ->toBeFalse()
             ->and($commands->contains(['sudo', 'systemctl', 'restart', 'wg-quick@orbit']))
             ->toBeFalse()
-            ->and($commands->contains(['sudo', 'rm', '-f', '--', '/etc/wireguard/orbit-candidate.conf']))
+            ->and($commands->contains([
+                'sudo',
+                'rm',
+                '-f',
+                '--',
+                '/etc/wireguard/orbit-candidate.conf',
+                '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+            ]))
+            ->toBeTrue();
+    } finally {
+        new Filesystem()->deleteDirectory($orbitHome);
+    }
+});
+
+it('keeps live VPN and forwarding configs untouched when forwarding validation fails', function (): void {
+    [$converger, $processes, $orbitHome] = gateway_vpn_converger(failForwarding: true);
+    $node = Node::query()->create([
+        'name' => 'gateway',
+        'public_ssh_host' => '85.9.218.89',
+        'wireguard_address' => '10.44.0.1',
+    ]);
+
+    try {
+        expect(fn () => $converger->converge($node, gateway_bootstrap_data()))
+            ->toThrow(function (NodeProvisioningException $exception): void {
+                expect($exception->step)
+                    ->toBe('wireguard-forwarding-apply')
+                    ->and($exception->errorCode)
+                    ->toBe('vpn.forwarding_config_invalid');
+            });
+        $commands = Collection::make($processes->calls)
+            ->map(static fn (ProcessInvocation $call): array => $call->arguments);
+
+        expect($commands->contains([
+            'sudo',
+            'mv',
+            '-f',
+            '--',
+            '/etc/wireguard/orbit-candidate.conf',
+            '/etc/wireguard/orbit.conf',
+        ]))
+            ->toBeFalse()
+            ->and($commands->contains([
+                'sudo',
+                'mv',
+                '-f',
+                '--',
+                '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+                '/etc/sysctl.d/90-orbit-wireguard-forwarding.conf',
+            ]))
+            ->toBeFalse()
+            ->and($commands->contains(['sudo', 'systemctl', 'restart', 'wg-quick@orbit']))
+            ->toBeFalse()
+            ->and($commands->contains([
+                'sudo',
+                'rm',
+                '-f',
+                '--',
+                '/etc/wireguard/orbit-candidate.conf',
+                '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+            ]))
             ->toBeTrue();
     } finally {
         new Filesystem()->deleteDirectory($orbitHome);
@@ -103,18 +193,19 @@ it('does not replace or start the gateway WireGuard service when validation fail
 });
 
 /** @return array{NativeGatewayVpnConverger, object&ProcessRunner, string} */
-function gateway_vpn_converger(bool $failValidation = false): array
+function gateway_vpn_converger(bool $failValidation = false, bool $failForwarding = false): array
 {
     $orbitHome = sys_get_temp_dir().'/orbit-gateway-vpn-'.Str::uuid();
     mkdir(directory: $orbitHome.'/wireguard', permissions: 0o700, recursive: true);
     file_put_contents(filename: $orbitHome.'/wireguard/private.key', data: 'SERVER_PRIVATE');
     file_put_contents(filename: $orbitHome.'/wireguard/public.key', data: 'SERVER_PUBLIC');
-    $processes = new class($failValidation) implements ProcessRunner {
+    $processes = new class($failValidation, $failForwarding) implements ProcessRunner {
         /** @var list<ProcessInvocation> */
         public array $calls = [];
 
         public function __construct(
             private readonly bool $failValidation,
+            private readonly bool $failForwarding,
         ) {}
 
         public function run(ProcessInvocation $invocation): CommandResult
@@ -126,6 +217,18 @@ function gateway_vpn_converger(bool $failValidation = false): array
                 && $invocation->arguments === ['sudo', 'wg-quick', 'strip', '/etc/wireguard/orbit-candidate.conf']
             ) {
                 return new CommandResult(1, '', 'invalid WireGuard config', 2, false);
+            }
+
+            if (
+                $this->failForwarding
+                && $invocation->arguments === [
+                    'sudo',
+                    'sysctl',
+                    '-p',
+                    '/etc/sysctl.d/.90-orbit-wireguard-forwarding.conf.candidate',
+                ]
+            ) {
+                return new CommandResult(1, '', 'invalid forwarding config', 2, false);
             }
 
             return new CommandResult(0, '', '', 2, false);
