@@ -35,6 +35,14 @@ This project has domain-specific skills in `.agents/skills`. Activate each relev
 - Run the affected tests and important failure modes.
 - Read the `testing-best-practices` skill before writing tests.
 
+## JavaScript toolchain
+
+Use `vp` for generic project package and script work. Vite+ defaults projects without a manager signal to pnpm.
+Follow Vite+'s documented selection order. Bun is used only when project state
+selects it. Vite+ manages Node through `vp env`; Orbit installs pnpm by default.
+Orbit installs Bun separately. It is a host runtime. Keep PHP and Composer
+workflows unchanged.
+
 ===
 
 <laravel-boost-guidelines>

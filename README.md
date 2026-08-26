@@ -12,6 +12,14 @@ container, a background agent, or a queue worker.
 - Composer 2
 - SQLite
 
+## Managed application hosts
+
+Orbit provisions Vite+, Vite+-managed LTS Node.js, npm, npx, default pnpm, and
+a separate Bun runtime on `app-dev` and `app-prod` nodes. Use `vp install` and
+`vp run <script>` in project setup and build instructions. Vite+ follows its
+native package-manager selection order and defaults a project without a manager
+signal to pnpm. PHP dependencies continue to use Composer.
+
 ## Development
 
 ```bash

@@ -170,7 +170,8 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
     $converger->converge($node, 'SHA256:pinned');
 
     $bootstrapArguments = $ssh->calls[0]['command']->arguments;
-    $bootstrapPackages = array_slice(array: $bootstrapArguments, offset: 5);
+    $bootstrapPackages = array_slice(array: $bootstrapArguments, offset: 6);
+    $bootstrapScript = $ssh->calls[0]['command']->input ?? '';
     $phpPackages = array_values(array_filter(
         array: $bootstrapPackages,
         callback: static fn (string $package): bool => str_starts_with($package, 'php'),
@@ -190,17 +191,19 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toHaveCount(5)
         ->and($ssh->calls[0]['connection']->user)
         ->toBe('root')
-        ->and(array_slice(array: $ssh->calls[0]['command']->arguments, offset: 0, length: 6))
+        ->and(array_slice(array: $ssh->calls[0]['command']->arguments, offset: 0, length: 7))
         ->toBe([
             'bash',
             '-seu',
             '--',
             'ssh-ed25519 GATEWAY',
             '1',
+            '1',
             'ca-certificates',
         ])
         ->and($bootstrapArguments)
         ->toContain(
+            'curl',
             'acl',
             'attr',
             'caddy',
@@ -211,19 +214,21 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         )
         ->and($phpPackages)
         ->toBeEmpty()
-        ->and($ssh->calls[0]['command']->input)
+        ->and($bootstrapScript)
         ->toContain(
             'app_dev=$2',
+            'app_host=$3',
+            'shift 3',
             'install -d -m 0700 -o orbit -g orbit /home/orbit',
             'install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees',
             'setfacl -m u:caddy:--x /home/orbit /home/orbit/apps /home/orbit/.orbit /home/orbit/.orbit/worktrees',
         )
         ->and(mb_strpos(
-            haystack: $ssh->calls[0]['command']->input ?? '',
+            haystack: $bootstrapScript,
             needle: 'install -d -m 0700 -o orbit -g orbit /home/orbit',
         ))
         ->toBeLessThan(mb_strpos(
-            haystack: $ssh->calls[0]['command']->input ?? '',
+            haystack: $bootstrapScript,
             needle: 'setfacl -m u:caddy:--x /home/orbit',
         ))
         ->and($ssh->calls[1]['connection']->user)
@@ -240,6 +245,199 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toBe('10.44.0.2')
         ->and($ssh->calls[4]['command']->arguments)
         ->toBe(['true']);
+});
+
+it('builds stable JavaScript runtime launchers for application hosts', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
+    $syntax = new Process(['bash', '-n']);
+    $syntax->setInput($bootstrapScript);
+    $syntax->run();
+
+    expect($bootstrapScript)
+        ->toContain(
+            'VP_HOME=/opt/orbit/vite-plus',
+            'https://vite.plus',
+            'env setup',
+            'env on',
+            'env install lts',
+            'env default lts',
+            'install -g --node lts pnpm',
+            'BUN_INSTALL=/opt/orbit/bun',
+            'https://bun.com/install',
+            '/usr/local/bin/vp',
+            '/usr/local/bin/node',
+            '/usr/local/bin/pnpm',
+            '/usr/local/bin/npm',
+            '/usr/local/bin/npx',
+            '/usr/local/bin/bun',
+            'export VP_HOME=/opt/orbit/vite-plus',
+        )
+        ->not
+        ->toContain('vp env install bun', 'npm install -g', 'bun install')
+        ->and($syntax->isSuccessful())
+        ->toBeTrue($syntax->getErrorOutput());
+});
+
+it('propagates failures from official runtime installer downloads', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
+
+    foreach (['https://vite.plus', 'https://bun.com/install'] as $installerUrl) {
+        $installerLine = collect(preg_split('/\R/', $bootstrapScript))
+            ->first(static fn (string $line): bool => str_contains($line, $installerUrl));
+
+        expect($installerLine)
+            ->toBeString()
+            ->toContain('bash -o pipefail -lc');
+
+        $failureCommand = preg_replace(
+            pattern: '/^sudo -u orbit -H env \S+ /',
+            replacement: '',
+            subject: trim($installerLine),
+        );
+        $failureCommand = str_replace(
+            search: "curl -fsSL {$installerUrl}",
+            replace: 'false',
+            subject: $failureCommand ?? '',
+        );
+        $failure = Process::fromShellCommandline($failureCommand);
+        $failure->run();
+
+        expect($failure->isSuccessful())->toBeFalse();
+    }
+});
+
+it('guards managed JavaScript paths before publishing stable entry points', function (): void {
+    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
+    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
+    $createOrbitUser = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'useradd --create-home --shell /bin/bash orbit',
+    );
+    $preflightRuntimeDirectory = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'Orbit JavaScript runtime directory conflict:',
+    );
+    $createRuntimeDirectory = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'install -d -m 0755 /opt/orbit',
+    );
+    $installVitePlus = mb_strpos(haystack: $bootstrapScript, needle: 'https://vite.plus');
+    $installNode = mb_strpos(haystack: $bootstrapScript, needle: 'env install lts');
+    $installPnpm = mb_strpos(haystack: $bootstrapScript, needle: 'install -g --node lts pnpm');
+    $installBun = mb_strpos(haystack: $bootstrapScript, needle: 'https://bun.com/install');
+    $preflightLaunchers = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'Orbit JavaScript runtime launcher conflict:',
+    );
+    $publishLaunchers = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'mv "$candidate" "$launcher"',
+    );
+    $validateLauncherTarget = mb_strpos(haystack: $bootstrapScript, needle: 'test -x "$target"');
+    $createCandidateDirectory = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'launcher_candidates=$(mktemp -d "/usr/local/bin/.orbit-js-runtime.XXXXXX")',
+    );
+    $preflightBun = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'Orbit JavaScript runtime link conflict:',
+    );
+    $publishBun = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'ln -s "$bun_binary" /usr/local/bin/bun',
+    );
+
+    expect($bootstrapScript)->toContain(
+        'stat -c \'%U:%G\' /opt/orbit',
+        'stat -c \'%U:%G\' "$directory"',
+        'stat -c \'%U:%G\' "$launcher"',
+        'stat -c \'%a\' "$launcher"',
+        'stat -c \'%U:%G\' /usr/local/bin/bun',
+        'candidate="$launcher_candidates/$binary"',
+        'cmp -s "$launcher" "$candidate"',
+        'chown root:root "$candidate"',
+        'published_paths=',
+        'rollback_javascript_runtime()',
+        'rm -f -- "$published_path"',
+        'trap rollback_javascript_runtime EXIT',
+        'published_paths="$published_paths $launcher"',
+        'published_paths="$published_paths /usr/local/bin/bun"',
+    );
+    expect($createOrbitUser)->toBeInt()->toBeLessThan($preflightRuntimeDirectory);
+    expect($preflightRuntimeDirectory)->toBeInt()->toBeLessThan($createRuntimeDirectory);
+    expect($createRuntimeDirectory)->toBeInt()->toBeLessThan($installVitePlus);
+    expect($installVitePlus)->toBeInt()->toBeLessThan($installNode);
+    expect($installNode)->toBeInt()->toBeLessThan($installPnpm);
+    expect($installPnpm)->toBeInt()->toBeLessThan($installBun);
+    expect($installBun)->toBeInt()->toBeLessThan($createCandidateDirectory);
+    expect($createCandidateDirectory)->toBeInt()->toBeLessThan($preflightLaunchers);
+    expect($validateLauncherTarget)->toBeInt()->toBeLessThan($preflightLaunchers);
+    expect($preflightLaunchers)->toBeInt()->toBeLessThan($publishLaunchers);
+    expect($preflightBun)->toBeInt()->toBeLessThan($publishLaunchers);
+    expect($preflightBun)->toBeInt()->toBeLessThan($publishBun);
+    expect(substr_count(haystack: $bootstrapScript, needle: '> "$candidate"'))->toBe(1);
+});
+
+it('rejects a foreign launcher before publishing any stable entry point', function (): void {
+    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
+    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
+
+    $harness = run_javascript_runtime_publication_harness(
+        bootstrapScript: $bootstrapScript,
+        foreignLauncher: 'npm',
+    );
+
+    try {
+        expect($harness['process']->isSuccessful())
+            ->toBeFalse()
+            ->and($harness['process']->getErrorOutput())
+            ->toContain("Orbit JavaScript runtime launcher conflict: {$harness['stableDirectory']}/npm")
+            ->and(file_get_contents("{$harness['stableDirectory']}/npm"))
+            ->toBe("foreign\n");
+
+        foreach (['vp', 'node', 'pnpm', 'npx', 'bun'] as $binary) {
+            expect("{$harness['stableDirectory']}/{$binary}")->not->toBeFile();
+        }
+    } finally {
+        new Filesystem()->deleteDirectory($harness['root']);
+    }
+});
+
+it('preserves exact launchers while rolling back new entry points after verification fails', function (): void {
+    $node = provisionable_node(role: RoleName::AppDev);
+    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
+
+    $harness = run_javascript_runtime_publication_harness(
+        bootstrapScript: $bootstrapScript,
+        failingRuntime: 'npx',
+        exactLauncher: 'vp',
+    );
+
+    try {
+        expect($harness['process']->isSuccessful())
+            ->toBeFalse()
+            ->and(file_get_contents("{$harness['stableDirectory']}/vp"))
+            ->toBe($harness['exactLauncherContents']);
+
+        foreach (['node', 'pnpm', 'npm', 'npx', 'bun'] as $binary) {
+            expect("{$harness['stableDirectory']}/{$binary}")->not->toBeFile();
+        }
+    } finally {
+        new Filesystem()->deleteDirectory($harness['root']);
+    }
+});
+
+it('enables the JavaScript runtime only for application host roles', function (): void {
+    $factory = new NodeBootstrapCommandFactory(test_keys());
+    $appProd = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
+    $vpn = provisionable_node(role: RoleName::Vpn, name: 'vpn', wireguardAddress: '10.44.0.9');
+
+    expect($factory->make($appProd->load('roles'))->arguments[5])
+        ->toBe('1')
+        ->and($factory->make($vpn->load('roles'))->arguments[5])
+        ->toBe('0');
 });
 
 it('uses passwordless sudo for the fixed bootstrap command when reconnecting as orbit', function (): void {
@@ -977,15 +1175,18 @@ it('converts app-dev Caddy failures into node provisioning failures', function (
         });
 });
 
-function provisionable_node(RoleName $role, string $name = 'app-dev'): Node
-{
+function provisionable_node(
+    RoleName $role,
+    string $name = 'app-dev',
+    string $wireguardAddress = '10.44.0.2',
+): Node {
     $node = Node::query()->create([
         'name' => $name,
         'platform' => 'linux',
         'public_ssh_host' => '94.237.40.75',
         'public_ssh_port' => 22,
         'ssh_user' => 'root',
-        'wireguard_address' => '10.44.0.2',
+        'wireguard_address' => $wireguardAddress,
     ]);
     $node->roles()->create(['role' => $role]);
 
@@ -1262,7 +1463,7 @@ function run_node_bootstrap_preflight(?string $release): Process
     $harness =
         str_replace('/etc/os-release', $releasePath, is_string($preMutation) ? $preMutation : $script)
         ."printf 'mutation-reached\\n'\n";
-    $process = new Process(['bash', '-seu', '--', 'ssh-ed25519 TEST', '0']);
+    $process = new Process(['bash', '-seu', '--', 'ssh-ed25519 TEST', '0', '0']);
     $process->setInput($harness);
     $process->run();
     $filesystem->deleteDirectory($directory);
@@ -1276,4 +1477,100 @@ function node_bootstrap_command(): RemoteCommand
     $node->setRelation('roles', collect());
 
     return new NodeBootstrapCommandFactory(test_keys())->make($node);
+}
+
+/**
+ * @return array{
+ *     root: string,
+ *     stableDirectory: string,
+ *     exactLauncherContents: string,
+ *     process: Process,
+ * }
+ */
+function run_javascript_runtime_publication_harness(
+    string $bootstrapScript,
+    ?string $foreignLauncher = null,
+    ?string $failingRuntime = null,
+    ?string $exactLauncher = null,
+): array {
+    $filesystem = new Filesystem;
+    $root = sys_get_temp_dir().'/orbit-javascript-runtime-'.Str::random(16);
+    $sourceDirectory = "{$root}/source";
+    $stableDirectory = "{$root}/stable";
+    $filesystem->makeDirectory($sourceDirectory, 0o700, recursive: true);
+    $filesystem->makeDirectory($stableDirectory, 0o700, recursive: true);
+
+    foreach (['vp', 'node', 'pnpm', 'npm', 'npx', 'bun'] as $binary) {
+        $exitCode = $binary === $failingRuntime ? 1 : 0;
+        $filesystem->put("{$sourceDirectory}/{$binary}", "#!/bin/sh\nexit {$exitCode}\n");
+        chmod(filename: "{$sourceDirectory}/{$binary}", permissions: 0o755);
+    }
+
+    $exactLauncherContents = '';
+
+    if ($exactLauncher !== null) {
+        $exactLauncherContents = implode("\n", [
+            '#!/bin/sh',
+            'export VP_HOME=/opt/orbit/vite-plus',
+            "exec \"{$sourceDirectory}/{$exactLauncher}\" \"\$@\"",
+            '',
+        ]);
+        $filesystem->put("{$stableDirectory}/{$exactLauncher}", $exactLauncherContents);
+        chmod(filename: "{$stableDirectory}/{$exactLauncher}", permissions: 0o755);
+    }
+
+    if ($foreignLauncher !== null) {
+        $filesystem->put("{$stableDirectory}/{$foreignLauncher}", "foreign\n");
+        chmod(filename: "{$stableDirectory}/{$foreignLauncher}", permissions: 0o755);
+    }
+
+    $start = mb_strpos(
+        haystack: $bootstrapScript,
+        needle: 'launcher_candidates=$(mktemp -d "/usr/local/bin/.orbit-js-runtime.XXXXXX")',
+    );
+    $end = is_int($start)
+        ? mb_strpos(haystack: $bootstrapScript, needle: 'trap - EXIT', offset: $start)
+        : false;
+
+    if (! is_int($start) || ! is_int($end)) {
+        throw new RuntimeException('Could not isolate the JavaScript runtime publication block.');
+    }
+
+    $publicationScript = mb_substr(
+        string: $bootstrapScript,
+        start: $start,
+        length: $end - $start + mb_strlen('trap - EXIT'),
+    );
+    $owner = posix_getpwuid(fileowner($stableDirectory));
+    $group = posix_getgrgid(filegroup($stableDirectory));
+
+    if (! is_array($owner) || ! is_array($group)) {
+        throw new RuntimeException('Could not resolve the JavaScript runtime harness owner.');
+    }
+
+    $publicationScript = str_replace(
+        [
+            '/opt/orbit/vite-plus/bin',
+            '/usr/local/bin',
+            "'root:root'",
+            'chown root:root "$candidate"',
+        ],
+        [
+            $sourceDirectory,
+            $stableDirectory,
+            "'{$owner['name']}:{$group['name']}'",
+            'true',
+        ],
+        $publicationScript,
+    );
+    $process = new Process(['bash', '-seu']);
+    $process->setInput("bun_binary={$sourceDirectory}/bun\n{$publicationScript}\n");
+    $process->run();
+
+    return [
+        'root' => $root,
+        'stableDirectory' => $stableDirectory,
+        'exactLauncherContents' => $exactLauncherContents,
+        'process' => $process,
+    ];
 }

@@ -243,6 +243,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         '## Publish managed state atomically',
         '## Search the legacy Orbit project before infrastructure design',
         '## Use only pinned Sury Resolute PHP packages',
+        '## Route project JavaScript work through Vite+',
         '## Run the Pest and Mago gates',
     ];
 
@@ -294,6 +295,23 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         );
     expect($testRules)
         ->toContain('Pest 5 TDD', 'Test Impact Analysis', 'without TIA', 'Rector', 'Mago', 'git diff --check');
+});
+
+it('records the Vite+ package management boundary in scoped guidance', function (): void {
+    $infrastructureRules = file_get_contents(
+        dirname(path: __DIR__, levels: 3).'/.ai/rules/infrastructure.md',
+    );
+
+    expect($infrastructureRules)
+        ->toBeString()
+        ->toContain(
+            'Use `vp` for generic project dependency and script commands.',
+            'Vite+ manages Node through `vp env`.',
+            'Orbit installs Bun separately.',
+            'defaults to pnpm',
+            '`vp install -g` uses Vite+\'s managed global store.',
+        )
+        ->not->toMatch('/\b(?:npm|npx|pnpm|pnpx|yarn|yarnpkg|bun|bunx)\s+(?:ci|install|run|exec|add|remove|update)\b/');
 });
 
 it('preserves project and installed testing guidance', function (): void {
