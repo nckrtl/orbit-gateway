@@ -216,6 +216,8 @@ final readonly class RemotePhpPackageManager
 
                     umask 077
                     work_directory=$(mktemp -d)
+                    gnupg_home="$work_directory/gnupg"
+                    install -d -m 0700 -- "$gnupg_home"
                     downloaded_key="$work_directory/apt.gpg"
                     source_candidate="$work_directory/orbit-php.sources"
                     key_backup="$work_directory/keyring.backup"
@@ -262,7 +264,7 @@ final readonly class RemotePhpPackageManager
                         "$key_url"
                     printf '%s  %s\n' "$expected_sha256" "$downloaded_key" | sha256sum --check --status
 
-                    actual_fingerprints=$(gpg --batch --with-colons --show-keys "$downloaded_key" \
+                    actual_fingerprints=$(GNUPGHOME="$gnupg_home" gpg --batch --with-colons --show-keys "$downloaded_key" \
                         | awk -F: '$1 == "fpr" { print $10 }' \
                         | sort -u)
                     expected_fingerprints=$(printf '%s\n%s\n' \
