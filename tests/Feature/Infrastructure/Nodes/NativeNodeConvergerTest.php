@@ -139,6 +139,15 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toHaveCount(5)
         ->and($ssh->calls[0]['connection']->user)
         ->toBe('root')
+        ->and(array_slice(array: $ssh->calls[0]['command']->arguments, offset: 0, length: 6))
+        ->toBe([
+            'bash',
+            '-seu',
+            '--',
+            'ssh-ed25519 GATEWAY',
+            '1',
+            'ca-certificates',
+        ])
         ->and($ssh->calls[0]['command']->arguments)
         ->toContain(
             'acl',
@@ -184,6 +193,121 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
         ->toBe('10.44.0.2')
         ->and($ssh->calls[4]['command']->arguments)
         ->toBe(['true']);
+});
+
+it('uses passwordless sudo for the fixed bootstrap command when reconnecting as orbit', function (): void {
+    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
+    $node->update([
+        'ssh_user' => 'orbit',
+        'ssh_host_fingerprint' => 'SHA256:pinned',
+    ]);
+    $keys = test_keys();
+    $bootstrapCommand = new NodeBootstrapCommandFactory($keys);
+    $expectedBootstrap = $bootstrapCommand->make($node->load('roles'));
+    $ssh = new class implements SshExecutor {
+        /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
+        public array $calls = [];
+
+        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+        {
+            $this->calls[] = ['connection' => $connection, 'command' => $command];
+
+            return node_success_result($command);
+        }
+    };
+    $converger = new NativeNodeConverger(
+        hostKeys: test_scanner(),
+        knownHosts: test_known_hosts(),
+        sshKeys: $keys,
+        ssh: $ssh,
+        bootstrapCommand: $bootstrapCommand,
+        wireGuard: new class implements WireGuardPeerConverger {
+            public function converge(Node $node, SshConnection $connection): void {}
+        },
+        appDevCaddy: new class implements AppDevCaddyManager {
+            public function converge(Node $node): void {}
+        },
+    );
+
+    $converger->converge($node);
+
+    expect($ssh->calls[0]['connection']->user)
+        ->toBe('orbit')
+        ->and($ssh->calls[0]['command']->arguments)
+        ->toBe(['sudo', '-n', '--', ...$expectedBootstrap->arguments])
+        ->and($ssh->calls[0]['command']->input)
+        ->toBe($expectedBootstrap->input)
+        ->and($ssh->calls[0]['command']->protectedInput)
+        ->toBeNull()
+        ->and($ssh->calls[1]['command']->arguments)
+        ->toBe(['true']);
+});
+
+it('reports a bounded bootstrap failure when passwordless sudo reconvergence fails', function (): void {
+    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
+    $node->update([
+        'ssh_user' => 'orbit',
+        'ssh_host_fingerprint' => 'SHA256:pinned',
+    ]);
+    $keys = test_keys();
+    $bootstrapCommand = new NodeBootstrapCommandFactory($keys);
+    $expectedBootstrap = $bootstrapCommand->make($node->load('roles'));
+    $failure = new CommandResult(1, '', 'sudo: a password is required', 10, false);
+    $ssh = new class($failure) implements SshExecutor {
+        /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
+        public array $calls = [];
+
+        public function __construct(
+            private CommandResult $failure,
+        ) {}
+
+        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+        {
+            $this->calls[] = ['connection' => $connection, 'command' => $command];
+
+            return $this->failure;
+        }
+    };
+    $converger = new NativeNodeConverger(
+        hostKeys: test_scanner(),
+        knownHosts: test_known_hosts(),
+        sshKeys: $keys,
+        ssh: $ssh,
+        bootstrapCommand: $bootstrapCommand,
+        wireGuard: new class implements WireGuardPeerConverger {
+            public function converge(Node $node, SshConnection $connection): void
+            {
+                throw new LogicException('WireGuard must not converge after bootstrap failure.');
+            }
+        },
+        appDevCaddy: new class implements AppDevCaddyManager {
+            public function converge(Node $node): void
+            {
+                throw new LogicException('Caddy must not converge after bootstrap failure.');
+            }
+        },
+    );
+
+    expect(fn () => $converger->converge($node))
+        ->toThrow(function (NodeProvisioningException $exception) use ($failure): void {
+            expect($exception->step)
+                ->toBe('base-host')
+                ->and($exception->errorCode)
+                ->toBe('node.bootstrap_failed')
+                ->and($exception->getMessage())
+                ->toBe('Could not bootstrap node [app-prod].')
+                ->and($exception->result)
+                ->toBe($failure);
+        });
+
+    expect($ssh->calls)
+        ->toHaveCount(1)
+        ->and($ssh->calls[0]['connection']->user)
+        ->toBe('orbit')
+        ->and($ssh->calls[0]['command']->arguments)
+        ->toBe(['sudo', '-n', '--', ...$expectedBootstrap->arguments])
+        ->and($ssh->calls[0]['command']->input)
+        ->toBe($expectedBootstrap->input);
 });
 
 it('preserves verified public SSH before enabling only required UFW role rules', function (): void {

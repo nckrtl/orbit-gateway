@@ -8,6 +8,7 @@ use App\Data\Nodes\ProvisionNodeData;
 use App\Domain\Nodes\NodeTld;
 use App\Domain\Nodes\RoleName;
 use App\Domain\WireGuard\WireGuardEndpoint;
+use App\Models\Node;
 use Closure;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -61,7 +62,11 @@ final class ProvisionNodeRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'alpha_dash:ascii', 'max:63'],
-            'public_ssh_host' => ['required_unless:platform,darwin', 'string', 'max:255'],
+            'public_ssh_host' => [
+                Rule::requiredIf($this->requiresPublicSshHost(...)),
+                'string',
+                'max:255',
+            ],
             'platform' => ['sometimes', 'string', Rule::in(['linux', 'darwin'])],
             'architecture' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_.-]{1,64}\z/D'],
             'tld' => [
@@ -92,6 +97,14 @@ final class ProvisionNodeRequest extends FormRequest
                 'string',
                 'regex:#\ASHA256:[A-Za-z0-9+/]{43}\z#D',
             ],
+        ];
+    }
+
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return [
+            'public_ssh_host.required' => 'The public SSH host field is required for a new Linux node.',
         ];
     }
 
@@ -134,5 +147,25 @@ final class ProvisionNodeRequest extends FormRequest
         }
 
         return is_string($validated['wireguard_address']) ? $validated['wireguard_address'] : '';
+    }
+
+    private function requiresPublicSshHost(): bool
+    {
+        if ($this->input('platform') === 'darwin') {
+            return false;
+        }
+
+        /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
+        $name = $this->input('name');
+
+        if (! is_string($name) || $name === '') {
+            return true;
+        }
+
+        return ! Node::query()
+            ->where('name', $name)
+            ->whereNotNull('public_ssh_host')
+            ->where('public_ssh_host', '!=', '')
+            ->exists();
     }
 }

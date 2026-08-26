@@ -93,10 +93,14 @@ final readonly class NativeNodeConverger implements NodeConverger
             'ssh_host_key' => $hostKey->value,
             'ssh_host_fingerprint' => $hostKey->fingerprint,
         ]);
+        $bootstrapNode = $node->loadMissing('roles');
+        $bootstrapCommand = $node->ssh_user === 'orbit'
+            ? $this->bootstrapCommand->makeWithPasswordlessSudo($bootstrapNode)
+            : $this->bootstrapCommand->make($bootstrapNode);
 
         $bootstrap = $this->ssh->execute(
             $this->connection($node, $node->ssh_user),
-            $this->bootstrapCommand->make($node->loadMissing('roles')),
+            $bootstrapCommand,
         );
 
         if (! $bootstrap->succeeded()) {

@@ -69,6 +69,84 @@ describe('POST /api/v1/nodes', function (): void {
             ->toBe($node->id);
     });
 
+    it('reuses the stored public SSH host when an existing Linux node omits it', function (): void {
+        $converger = new class implements NodeConverger {
+            public int $calls = 0;
+
+            public ?string $publicSshHost = null;
+
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
+            {
+                $this->calls++;
+                $this->publicSshHost = $node->public_ssh_host;
+            }
+        };
+        app()->instance(NodeConverger::class, $converger);
+        $node = Node::query()->create([
+            'name' => 'app-dev',
+            'status' => LifecycleStatus::Active,
+            'platform' => 'linux',
+            'architecture' => 'x86_64',
+            'tld' => 'app-dev.orbit',
+            'public_ssh_host' => '192.0.2.40',
+            'wireguard_address' => '10.44.0.3',
+            'ssh_host_fingerprint' => 'SHA256:pinned',
+        ]);
+        $node->roles()->create([
+            'role' => 'app-dev',
+            'status' => LifecycleStatus::Active,
+        ]);
+
+        $this
+            ->postJson('/api/v1/nodes', [
+                'name' => 'app-dev',
+                'architecture' => 'x86_64',
+                'tld' => 'app-dev.orbit',
+                'roles' => ['app-dev'],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.public_ssh_host', '192.0.2.40');
+
+        expect($converger->calls)
+            ->toBe(1)
+            ->and($converger->publicSshHost)
+            ->toBe('192.0.2.40')
+            ->and($node->refresh()->public_ssh_host)
+            ->toBe('192.0.2.40');
+    });
+
+    it('returns a stable validation error when a new Linux node omits its public SSH host', function (): void {
+        $converger = new class implements NodeConverger {
+            public int $calls = 0;
+
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
+            {
+                $this->calls++;
+            }
+        };
+        app()->instance(NodeConverger::class, $converger);
+
+        $this
+            ->postJson('/api/v1/nodes', [
+                'name' => 'new-linux-node',
+                'platform' => 'linux',
+                'architecture' => 'x86_64',
+                'host_key_fingerprint' => 'SHA256:'.str_repeat(string: 'A', times: 43),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'validation.failed')
+            ->assertJsonPath('error.message', 'The request data is invalid.')
+            ->assertJsonPath(
+                'error.details.public_ssh_host.0',
+                'The public SSH host field is required for a new Linux node.',
+            );
+
+        expect($converger->calls)
+            ->toBe(0)
+            ->and(Node::query()->where('name', 'new-linux-node')->exists())
+            ->toBeFalse();
+    });
+
     it('uses the request pin as the expectation and returns the observed stored fingerprint', function (): void {
         $observedFingerprint = 'SHA256:'.str_repeat(string: 'B', times: 43);
         $converger = new class($observedFingerprint) implements NodeConverger {

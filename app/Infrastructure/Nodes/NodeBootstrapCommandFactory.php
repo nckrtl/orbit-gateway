@@ -17,15 +17,29 @@ final readonly class NodeBootstrapCommandFactory
 
     public function make(Node $node): RemoteCommand
     {
+        return $this->command($node);
+    }
+
+    public function makeWithPasswordlessSudo(Node $node): RemoteCommand
+    {
+        return $this->command($node, ['sudo', '-n', '--']);
+    }
+
+    /** @param list<string> $argumentPrefix */
+    private function command(Node $node, array $argumentPrefix = []): RemoteCommand
+    {
+        $arguments = [
+            ...$argumentPrefix,
+            'bash',
+            '-seu',
+            '--',
+            $this->keys->publicKey(),
+            $node->roles->pluck('role')->contains(RoleName::AppDev) ? '1' : '0',
+            ...$this->packages($node),
+        ];
+
         return new RemoteCommand(
-            arguments: [
-                'bash',
-                '-seu',
-                '--',
-                $this->keys->publicKey(),
-                $node->roles->pluck('role')->contains(RoleName::AppDev) ? '1' : '0',
-                ...$this->packages($node),
-            ],
+            arguments: $arguments,
             input: <<<'BASH'
                 orbit_key=$1
                 app_dev=$2
