@@ -149,6 +149,7 @@ describe('GET /api/v1/nodes serialization', function (): void {
     });
 });
 
+/** @mago-expect lint:halstead The API group keeps the node show serialization and access projection together. */
 describe('GET /api/v1/nodes/{node}', function (): void {
     it('shows one node in the standard envelope without secret fields', function (): void {
         $node = $this->markAsGateway(Node::query()->create([
@@ -224,6 +225,83 @@ describe('GET /api/v1/nodes/{node}', function (): void {
             ->toBe('failed')
             ->and($activity->error_code)
             ->toBe('http.404');
+    });
+
+    it('shows stored outbound and inbound access summaries in stable node id order', function (): void {
+        $operator = $this->markAsGateway(Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.20',
+            'wireguard_address' => '10.44.0.20',
+        ]));
+        $node = Node::query()->create([
+            'name' => 'serving-node',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.21',
+            'wireguard_address' => '10.44.0.21',
+        ]);
+        $zuluOutbound = Node::query()->create([
+            'name' => 'zulu-outbound',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.22',
+            'wireguard_address' => '10.44.0.22',
+        ]);
+        $alphaOutbound = Node::query()->create([
+            'name' => 'alpha-outbound',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.23',
+            'wireguard_address' => '10.44.0.23',
+        ]);
+        $zuluInbound = Node::query()->create([
+            'name' => 'zulu-inbound',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.24',
+            'wireguard_address' => '10.44.0.24',
+        ]);
+        $alphaInbound = Node::query()->create([
+            'name' => 'alpha-inbound',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.25',
+            'wireguard_address' => '10.44.0.25',
+        ]);
+
+        $node->accessibleNodes()->attach([$alphaOutbound->id, $zuluOutbound->id]);
+        $node->accessingNodes()->attach([$alphaInbound->id, $zuluInbound->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+            ->getJson("/api/v1/nodes/{$node->id}")
+            ->assertOk()
+            ->assertJsonPath('data.access.can_access', [
+                ['id' => $zuluOutbound->id, 'name' => 'zulu-outbound'],
+                ['id' => $alphaOutbound->id, 'name' => 'alpha-outbound'],
+            ])
+            ->assertJsonPath('data.access.accessible_by', [
+                ['id' => $zuluInbound->id, 'name' => 'zulu-inbound'],
+                ['id' => $alphaInbound->id, 'name' => 'alpha-inbound'],
+            ]);
+    });
+
+    it('shows empty access arrays when a node has no stored edges', function (): void {
+        $operator = $this->markAsGateway(Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.30',
+            'wireguard_address' => '10.44.0.30',
+        ]));
+        $node = Node::query()->create([
+            'name' => 'isolated-node',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.31',
+            'wireguard_address' => '10.44.0.31',
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+            ->getJson("/api/v1/nodes/{$node->id}")
+            ->assertOk()
+            ->assertJsonPath('data.access.can_access', [])
+            ->assertJsonPath('data.access.accessible_by', []);
     });
 });
 
@@ -305,5 +383,27 @@ describe('GET /api/v1/nodes collection access', function (): void {
             ->getJson('/api/v1/nodes')
             ->assertForbidden()
             ->assertJsonPath('error.code', 'node_access.required');
+    });
+
+    it('keeps node list serialization free of access data', function (): void {
+        $operator = $this->markAsGateway(Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.40',
+            'wireguard_address' => '10.44.0.40',
+        ]));
+        Node::query()->create([
+            'name' => 'listed-node',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.41',
+            'wireguard_address' => '10.44.0.41',
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonMissingPath('data.0.access')
+            ->assertJsonMissingPath('data.1.access');
     });
 });

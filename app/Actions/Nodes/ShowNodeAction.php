@@ -10,6 +10,16 @@ final readonly class ShowNodeAction
 {
     public function handle(Node $node): Node
     {
-        return $node->load('roles');
+        $node->load('roles');
+        $node->setRelation(
+            'accessibleNodes',
+            $node->accessibleNodes()->orderBy('nodes.id')->get(),
+        );
+        $node->setRelation(
+            'accessingNodes',
+            $node->accessingNodes()->orderBy('nodes.id')->get(),
+        );
+
+        return $node;
     }
 }

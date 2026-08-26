@@ -8,6 +8,7 @@ use App\Actions\Nodes\ListNodesAction;
 use App\Actions\Nodes\ProvisionNodeAction;
 use App\Actions\Nodes\RemoveNodeAction;
 use App\Actions\Nodes\ShowNodeAction;
+use App\Data\Nodes\NodeAccessData;
 use App\Data\Nodes\NodeData;
 use App\Http\Authorization\RequiresNodeAccess;
 use App\Http\Authorization\ServingNode;
@@ -40,8 +41,13 @@ final class NodesController extends Controller
     #[RequiresNodeAccess(ServingNode::Target)]
     public function show(Request $request, Node $node, ShowNodeAction $action): JsonResponse
     {
+        $node = $action->handle($node);
+
         return response()->json([
-            'data' => NodeData::fromModel($action->handle($node))->toArray(),
+            'data' => [
+                ...NodeData::fromModel($node)->toArray(),
+                'access' => NodeAccessData::fromModel($node)->toArray(),
+            ],
             'meta' => ['request_id' => $request->attributes->getString('orbit.request_id')],
         ]);
     }
