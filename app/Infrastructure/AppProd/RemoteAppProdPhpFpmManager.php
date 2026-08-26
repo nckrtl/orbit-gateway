@@ -32,7 +32,8 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
             ->map(static fn (AppProdSite $site): string => $site->phpVersion)
             ->unique()
             ->values();
-        $unsupportedVersion = $desiredVersions->diff(collect(SupportedPhpVersion::all()))->first();
+        $unsupportedVersion = $desiredVersions
+            ->first(static fn (string $version): bool => ! SupportedPhpVersion::isSupported($version));
 
         if (is_string($unsupportedVersion)) {
             throw new RuntimeConvergenceException(

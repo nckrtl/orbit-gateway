@@ -1004,9 +1004,11 @@ it('installs selected PHP versions and validates a complete staged FPM configura
         ->values();
 
     expect($ssh->commands)
-        ->toHaveCount(6)
-        ->and($ssh->commands[3]->input)
-        ->toContain('apt-get -o DPkg::Lock::Timeout=300 install', '"php$version-fpm"')
+        ->toHaveCount(5)
+        ->and($ssh->commands[2]->input)
+        ->toContain('apt-get -o DPkg::Lock::Timeout=300 install')
+        ->and($ssh->commands[2]->arguments)
+        ->toContain('php8.4-fpm', 'php8.4-pcov', 'php8.4-opcache')
         ->and($publishCalls)
         ->toHaveCount(2)
         ->and($publishCalls->first()?->input)
@@ -1070,7 +1072,7 @@ it('restores the exact AppDev FPM file before the recovery reload when activatio
             lockDirectory: $harness->lockDirectory(),
         );
         $manager->converge($node);
-        $result = $harness->run($ssh->commands[2]);
+        $result = $harness->run($ssh->commands[3]);
 
         expect($result->succeeded())
             ->toBeFalse($result->stderr)
@@ -1093,7 +1095,7 @@ it('restores the exact AppDev FPM file before the recovery reload when activatio
 });
 
 it('rejects an unsupported PHP version before target discovery or installation', function (): void {
-    [$node] = app_dev_runtime_models(instancePhp: '9.9');
+    [$node] = app_dev_runtime_models(instancePhp: '8.3');
     $ssh = new AppDevFakeSshExecutor;
     $manager = new RemoteAppDevPhpFpmManager(
         sites: new AppDevSiteRepository,

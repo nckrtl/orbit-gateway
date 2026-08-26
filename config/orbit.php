@@ -13,10 +13,6 @@ if (is_string($userHome) && $userHome !== '') {
 if (is_string($configuredHome) && $configuredHome !== '') {
     $orbitHome = $configuredHome;
 }
-$supportedPhpVersions = array_values(array_filter(
-    explode(',', (string) env(key: 'ORBIT_SUPPORTED_PHP_VERSIONS', default: '8.4,8.5')),
-    static fn (string $version): bool => $version !== '',
-));
 
 return [
     'home' => rtrim(string: $orbitHome, characters: '/'),
@@ -28,6 +24,5 @@ return [
         string: env(key: 'ORBIT_APP_DEV_DOMAIN', default: 'orbit'),
         characters: '.',
     ),
-    'supported_php_versions' => $supportedPhpVersions,
     'command_timeout' => 900.0,
 ];

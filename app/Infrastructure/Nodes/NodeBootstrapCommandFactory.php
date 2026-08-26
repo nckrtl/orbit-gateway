@@ -41,6 +41,21 @@ final readonly class NodeBootstrapCommandFactory
         return new RemoteCommand(
             arguments: $arguments,
             input: <<<'BASH'
+                if [ ! -r /etc/os-release ]; then
+                    printf '%s\n' 'Orbit requires Ubuntu 26.04 Resolute.' >&2
+                    exit 1
+                fi
+
+                if ! . /etc/os-release; then
+                    printf '%s\n' 'Orbit requires Ubuntu 26.04 Resolute.' >&2
+                    exit 1
+                fi
+
+                if [ "${ID:-}" != ubuntu ] || [ "${VERSION_CODENAME:-}" != resolute ]; then
+                    printf '%s\n' 'Orbit requires Ubuntu 26.04 Resolute.' >&2
+                    exit 1
+                fi
+
                 orbit_key=$1
                 app_dev=$2
                 shift 2
@@ -84,6 +99,7 @@ final readonly class NodeBootstrapCommandFactory
             'ca-certificates',
             'curl',
             'git',
+            'gnupg',
             'openssh-client',
             'sudo',
             'ufw',

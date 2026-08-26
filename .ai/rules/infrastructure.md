@@ -16,3 +16,6 @@ Require exact Orbit ownership before mutation. For shared state, lock first, sna
 
 ## Search the legacy Orbit project before infrastructure design
 Search /home/nckrtl/orbit implementations and tests before inventing infrastructure behavior. Port proven invariants when compatible, but never port the retired Agent, Docker or Swarm gateway, permissions, operation topology, generic executors, Compose, FrankenPHP, or image-building architecture.
+
+## Use only pinned Sury Resolute PHP packages
+Require Ubuntu Resolute before remote mutation. Use the direct Sury PHP repository with an Orbit-owned scoped keyring, pinned key digest and fingerprints, exact candidate-origin checks, and atomic recovery. Never use a Launchpad PPA, mix Ubuntu suites, or accept caller-provided package sources.

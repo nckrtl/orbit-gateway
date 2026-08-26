@@ -21,6 +21,7 @@ use App\Infrastructure\WireGuard\WireGuardPeerConverger;
 use App\Models\Node;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Str;
+use Symfony\Component\Process\Process;
 use Tests\Support\NodeExecutingInactiveUfwSshExecutor;
 
 it('fails closed before SSH when no host adapter supports the node platform', function (): void {
@@ -67,6 +68,49 @@ it('fails closed before SSH when no host adapter supports the node platform', fu
         });
 
     expect($scans)->toBe(0);
+});
+
+it('stops unsupported operating systems before the first bootstrap mutation', function (?string $release): void {
+    $result = run_node_bootstrap_preflight($release);
+
+    expect($result->isSuccessful())
+        ->toBeFalse()
+        ->and($result->getErrorOutput())
+        ->toContain('Orbit requires Ubuntu 26.04 Resolute.')
+        ->and($result->getOutput())
+        ->not->toContain('mutation-reached');
+})->with([
+    'missing release file' => null,
+    'Ubuntu Noble' => "ID=ubuntu\nVERSION_CODENAME=noble\n",
+    'Debian' => "ID=debian\nVERSION_CODENAME=resolute\n",
+    'malformed codename' => "ID=ubuntu\nVERSION_CODENAME='resolute extra'\n",
+]);
+
+it('reaches bootstrap operations only on Ubuntu Resolute', function (): void {
+    $command = node_bootstrap_command();
+    $result = run_node_bootstrap_preflight("ID=ubuntu\nVERSION_CODENAME=resolute\n");
+    $script = $command->input ?? '';
+    $preflight = mb_strpos(haystack: $script, needle: 'Orbit requires Ubuntu 26.04 Resolute.');
+    $firstMutation = mb_strpos(haystack: $script, needle: 'apt-get update');
+
+    expect($result->isSuccessful())
+        ->toBeTrue()
+        ->and($result->getOutput())
+        ->toContain('mutation-reached')
+        ->and($script)
+        ->toContain(
+            '[ ! -r /etc/os-release ]',
+            '. /etc/os-release',
+            '[ "${ID:-}" != ubuntu ]',
+            '[ "${VERSION_CODENAME:-}" != resolute ]',
+        )
+        ->and($command->arguments)
+        ->toContain('gnupg')
+        ->and($preflight)
+        ->toBeInt()
+        ->toBeLessThan($firstMutation)
+        ->and($firstMutation)
+        ->toBeInt();
 });
 
 it('pins the host and bootstraps verified orbit SSH access', function (): void {
@@ -1195,4 +1239,41 @@ function fingerprint_guard_converger(
         wireGuard: $wireGuard,
         appDevCaddy: $caddy,
     );
+}
+
+function run_node_bootstrap_preflight(?string $release): Process
+{
+    $filesystem = new Filesystem;
+    $directory = sys_get_temp_dir().'/orbit-node-bootstrap-'.Str::random(16);
+    $releasePath = "{$directory}/os-release";
+    $filesystem->makeDirectory($directory, 0o700);
+
+    if ($release !== null) {
+        $filesystem->put($releasePath, $release);
+    }
+
+    $command = node_bootstrap_command();
+    $script = $command->input ?? '';
+    $preMutation = strstr(
+        haystack: $script,
+        needle: 'export DEBIAN_FRONTEND=noninteractive',
+        before_needle: true,
+    );
+    $harness =
+        str_replace('/etc/os-release', $releasePath, is_string($preMutation) ? $preMutation : $script)
+        ."printf 'mutation-reached\\n'\n";
+    $process = new Process(['bash', '-seu', '--', 'ssh-ed25519 TEST', '0']);
+    $process->setInput($harness);
+    $process->run();
+    $filesystem->deleteDirectory($directory);
+
+    return $process;
+}
+
+function node_bootstrap_command(): RemoteCommand
+{
+    $node = new Node;
+    $node->setRelation('roles', collect());
+
+    return new NodeBootstrapCommandFactory(test_keys())->make($node);
 }

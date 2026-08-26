@@ -126,20 +126,20 @@ describe('instance API', function (): void {
                 'app_id' => $this->orbitApp->id,
                 'node_id' => $this->node->id,
                 'name' => 'renamed-metadata',
-                'php_version' => '8.4',
+                'php_version' => '8.6',
             ]);
 
         $second
             ->assertOk()
             ->assertJsonPath('data.id', $first->json('data.id'))
             ->assertJsonPath('data.name', 'renamed-metadata')
-            ->assertJsonPath('data.php_version', '8.4')
+            ->assertJsonPath('data.php_version', '8.6')
             ->assertJsonPath('data.status', 'active');
 
         expect(Instance::query()->count())
             ->toBe(1)
             ->and($this->runtime->calls)
-            ->toBe(['instance:1:8.5', 'instance:1:8.4']);
+            ->toBe(['instance:1:8.5', 'instance:1:8.6']);
 
         $activity = Activity::query()->where('request_id', $requestId)->sole();
 
@@ -625,7 +625,7 @@ describe('instance API', function (): void {
         'absolute document root' => [['document_root' => '/etc'], 'document_root'],
         'parent document root' => [['document_root' => '../public'], 'document_root'],
         'shell-like php version' => [['php_version' => '8.5;id'], 'php_version'],
-        'unavailable php version' => [['php_version' => '9.9'], 'php_version'],
+        'PHP version below the floor' => [['php_version' => '8.3'], 'php_version'],
         'non-DNS instance name' => [['name' => 'dev_one'], 'name'],
     ]);
 });

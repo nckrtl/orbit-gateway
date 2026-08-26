@@ -30,8 +30,8 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
             ->map(static fn (AppDevSite $site): string => $site->phpVersion)
             ->unique()
             ->values();
-        $supportedVersions = collect(SupportedPhpVersion::all());
-        $unsupportedVersion = $desiredVersions->diff($supportedVersions)->first();
+        $unsupportedVersion = $desiredVersions
+            ->first(static fn (string $version): bool => ! SupportedPhpVersion::isSupported($version));
 
         if (is_string($unsupportedVersion)) {
             throw new \App\Domain\AppDev\RuntimeConvergenceException(

@@ -143,7 +143,7 @@ describe('workspace API', function (): void {
                 'name' => 'feature-one',
                 'branch' => 'feature/one',
                 'checkout_path' => '/home/orbit/custom-worktrees/acme-feature-one',
-                'php_version' => '8.4',
+                'php_version' => '8.6',
             ])
             ->assertStatus(502)
             ->assertJsonPath('error.code', 'workspace.worktree_failed');
@@ -158,11 +158,12 @@ describe('workspace API', function (): void {
                 'name' => 'feature-one',
                 'branch' => 'feature/one',
                 'checkout_path' => '/home/orbit/custom-worktrees/acme-feature-one',
-                'php_version' => '8.4',
+                'php_version' => '8.6',
             ])
             ->assertOk()
             ->assertJsonPath('data.status', 'active')
-            ->assertJsonPath('data.checkout_path', '/home/orbit/custom-worktrees/acme-feature-one');
+            ->assertJsonPath('data.checkout_path', '/home/orbit/custom-worktrees/acme-feature-one')
+            ->assertJsonPath('data.php_version', '8.6');
     });
 
     it('lists, shows, changes php, and removes a workspace', function (): void {
@@ -291,7 +292,7 @@ describe('workspace API', function (): void {
         'app directory' => [['checkout_path' => '/home/orbit/apps/other/feature'], 'checkout_path'],
         'option branch' => [['branch' => '--upload-pack=bad'], 'branch'],
         'invalid php version' => [['php_version' => 'latest'], 'php_version'],
-        'unavailable php version' => [['php_version' => '9.9'], 'php_version'],
+        'PHP version below the floor' => [['php_version' => '8.3'], 'php_version'],
         'non-DNS workspace name' => [['name' => 'feature_one'], 'name'],
     ]);
 

@@ -6,30 +6,28 @@ namespace App\Rules;
 
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
-use Illuminate\Support\Facades\Config;
 
 final readonly class SupportedPhpVersion implements ValidationRule
 {
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
-        if (is_string($value) && in_array($value, self::all(), strict: true)) {
+        if (self::isSupported($value)) {
             return;
         }
 
         $fail('The selected PHP version is not supported.');
     }
 
-    /** @return non-empty-list<string> */
-    public static function all(): array
+    public static function isSupported(mixed $value): bool
     {
-        $versions = array_values(array_filter(
-            array_map(
-                static fn (mixed $version): string => is_string($version) ? $version : '',
-                Config::array('orbit.supported_php_versions'),
-            ),
-            static fn (string $version): bool => $version !== '',
-        ));
+        if (! is_string($value)) {
+            return false;
+        }
 
-        return $versions === [] ? ['8.4', '8.5'] : $versions;
+        if (preg_match('/\A(?:[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z/D', $value) !== 1) {
+            return false;
+        }
+
+        return version_compare(version1: $value, version2: '8.4', operator: '>=');
     }
 }

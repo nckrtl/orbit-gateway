@@ -242,6 +242,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         '## Keep secrets out of command arguments',
         '## Publish managed state atomically',
         '## Search the legacy Orbit project before infrastructure design',
+        '## Use only pinned Sury Resolute PHP packages',
         '## Run the Pest and Mago gates',
     ];
 
@@ -266,6 +267,14 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
             'stable error envelopes',
             'redact',
             'colon-delimited route names',
+        );
+    expect($infrastructureRules)
+        ->toContain(
+            'Ubuntu Resolute',
+            'direct Sury PHP repository',
+            'pinned key digest and fingerprints',
+            'exact candidate-origin checks',
+            'Never use a Launchpad PPA',
         );
     expect($infrastructureRules)
         ->toContain(

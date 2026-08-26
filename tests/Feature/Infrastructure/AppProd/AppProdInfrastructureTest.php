@@ -263,20 +263,18 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
     $manager->converge($node);
 
     expect($ssh->commands)
-        ->toHaveCount(6)
+        ->toHaveCount(5)
         ->and($ssh->commands[1]->arguments)
-        ->toContain('8.5')
+        ->toContain('php8.5-fpm')
         ->and($ssh->commands[1]->input)
-        ->toContain('/usr/sbin/php-fpm$version')
-        ->and($ssh->commands[2]->input)
         ->toContain('apt-cache policy -- "$package"')
-        ->and($ssh->commands[3]->input)
-        ->toContain(
-            'apt-get -o DPkg::Lock::Timeout=300 install',
-            'php$version-cli',
-            'php$version-fpm',
-        )
-        ->and($ssh->commands[5]->input)
+        ->and($ssh->commands[2]->input)
+        ->toContain('apt-get -o DPkg::Lock::Timeout=300 install')
+        ->and($ssh->commands[2]->arguments)
+        ->toContain('php8.5-cli', 'php8.5-fpm')
+        ->not
+        ->toContain('php8.5-pcov', 'php8.5-opcache')
+        ->and($ssh->commands[4]->input)
         ->toContain(
             'exec 9>"$lock_directory/orbit-php-fpm-$version.lock"',
             'flock -w 30 9',
@@ -290,7 +288,7 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
             'sudo systemctl reload-or-restart "php$version-fpm" || true',
         );
 
-    $script = $ssh->commands[5]->input ?? '';
+    $script = $ssh->commands[4]->input ?? '';
     $lock = mb_strpos(haystack: $script, needle: 'flock -w 30 9');
     $snapshot = mb_strpos(haystack: $script, needle: 'for pool in "$pool_directory"/*.conf');
     $validation = mb_strpos(
@@ -325,8 +323,6 @@ it('keeps AppProd package-source and install failures stable', function (): void
     [$node] = app_prod_runtime_models();
     $sourceFailureSsh = new AppDevFakeSshExecutor([
         new CommandResult(0, '', '', 1, false),
-        new CommandResult(0, "8.5\n", '', 1, false),
-        new CommandResult(0, "8.5\n", '', 1, false),
         new CommandResult(1, '', 'source unavailable', 1, false),
     ]);
     $sourceFailureManager = new RemoteAppProdPhpFpmManager(
@@ -345,7 +341,6 @@ it('keeps AppProd package-source and install failures stable', function (): void
 
     $installFailureSsh = new AppDevFakeSshExecutor([
         new CommandResult(0, '', '', 1, false),
-        new CommandResult(0, "8.5\n", '', 1, false),
         new CommandResult(0, '', '', 1, false),
         new CommandResult(1, '', 'install failed', 1, false),
     ]);
@@ -380,7 +375,7 @@ it('restores the exact AppProd FPM file before the recovery reload when activati
             logDirectory: $harness->logDirectory(),
         );
         $manager->converge($node);
-        $result = $harness->run($ssh->commands[2]);
+        $result = $harness->run($ssh->commands[3]);
 
         expect($result->succeeded())
             ->toBeFalse($result->stderr)
