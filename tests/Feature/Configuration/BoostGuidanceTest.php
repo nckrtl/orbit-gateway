@@ -33,6 +33,7 @@ it('regenerates strict guidance while preserving project-owned sections', functi
             'Use `vp` for generic project package and script work.',
             'Vite+ defaults projects without a manager signal to pnpm.',
             'Orbit installs Bun separately.',
+            'Enforce binary directed node access at the HTTP boundary.',
         )
         ->not->toMatch('/\b(?:npm|npx|pnpm|pnpx|yarn|yarnpkg|bun|bunx)\s+(?:ci|install|run|exec|add|remove|update)\b/');
 
@@ -77,6 +78,7 @@ it('regenerates strict guidance while preserving project-owned sections', functi
             'Use `vp` for generic project package and script work.',
             'Vite+ defaults projects without a manager signal to pnpm.',
             'Orbit installs Bun separately.',
+            'Enforce binary directed node access at the HTTP boundary.',
         )
         ->not->toMatch('/\b(?:npm|npx|pnpm|pnpx|yarn|yarnpkg|bun|bunx)\s+(?:ci|install|run|exec|add|remove|update)\b/');
 

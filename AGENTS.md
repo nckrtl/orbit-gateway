@@ -8,7 +8,8 @@ Laravel 13 control plane for Orbit.
 - Keep infrastructure execution synchronous and idempotent.
 - Use Pest 5 with `describe()` and `it()`.
 - Use Mago for formatting, linting, and analysis.
-- Do not add queues, agents, a UI, Docker orchestration, or permissions.
+- Do not add queues, agents, a UI, or Docker orchestration.
+- Enforce binary directed node access at the HTTP boundary. One access edge permits all commands for its serving node. The active Gateway peer is implicit authority, and access to the Gateway is fleet-wide. Do not add granular permissions, presets, wildcards, or permission compatibility code.
 
 ## Required Guidance Bootstrap
 
