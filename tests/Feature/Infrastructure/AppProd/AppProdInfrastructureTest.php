@@ -22,6 +22,7 @@ use App\Infrastructure\AppProd\RemoteAppProdUserManager;
 use App\Infrastructure\Processes\CommandResult;
 use App\Infrastructure\Ssh\HostKey;
 use App\Infrastructure\Ssh\KnownHostsStore;
+use App\Infrastructure\Ssh\RemoteCommand;
 use App\Infrastructure\Ssh\SshKeyProvider;
 use App\Models\App as OrbitApp;
 use App\Models\Instance;
@@ -245,6 +246,125 @@ it('rejects an unsafe stored repository origin before app-prod SSH execution', f
         ->toContain($sentinel)
         ->and($ssh->commands)
         ->toBeEmpty();
+});
+
+it('retires the previous app-prod pool before activating its lower PHP version', function (): void {
+    [$node, $instance] = app_prod_runtime_models();
+    $sites = new AppProdSiteRepository;
+    $renderer = new AppProdPhpFpmConfigRenderer;
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+    ]);
+    $manager = new RemoteAppProdPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_prod_ssh($ssh),
+    );
+
+    $manager->converge($node);
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($ssh->commands[0]->input)
+        ->toContain('base64 --wrap=0 -- "$path"')
+        ->and($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4'])
+        ->and($publishCalls->first()?->input)
+        ->toContain("printf '%s' '' | base64 --decode");
+});
+
+it('restores the previous app-prod pool when lower PHP activation fails', function (): void {
+    [$node, $instance] = app_prod_runtime_models();
+    $sites = new AppProdSiteRepository;
+    $renderer = new AppProdPhpFpmConfigRenderer;
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(1, '', 'activation failed', 1, false),
+    ]);
+    $manager = new RemoteAppProdPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_prod_ssh($ssh),
+    );
+
+    expect(fn () => $manager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->errorCode)->toBe('app-prod.php_fpm_config_failed');
+        });
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4', '8.5'])
+        ->and($publishCalls->last()?->input)
+        ->toContain(base64_encode($previousConfiguration));
+});
+
+it('removes a newly activated app-prod pool when later PHP activation fails', function (): void {
+    [$node, $instance] = app_prod_runtime_models();
+    $secondApp = OrbitApp::query()->create([
+        'name' => 'Second',
+        'slug' => 'second',
+        'repository_url' => 'git@github.com:acme/second.git',
+    ]);
+    $secondInstance = Instance::query()->create([
+        'app_id' => $secondApp->id,
+        'node_id' => $node->id,
+        'name' => 'main',
+        'environment' => 'production',
+        'checkout_path' => '/var/www/second/main',
+        'document_root' => 'public',
+        'php_version' => '8.5',
+        'hostname' => 'second.nckrtl.com',
+        'certificate_mode' => CertificateMode::Acme,
+        'status' => LifecycleStatus::Active,
+    ]);
+    $sites = new AppProdSiteRepository;
+    $renderer = new AppProdPhpFpmConfigRenderer;
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $secondInstance->update(['php_version' => '8.6']);
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(1, '', 'activation failed', 1, false),
+    ]);
+    $manager = new RemoteAppProdPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_prod_ssh($ssh),
+    );
+
+    expect(fn () => $manager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->errorCode)->toBe('app-prod.php_fpm_config_failed');
+        });
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4', '8.6', '8.4', '8.5'])
+        ->and($publishCalls->get(3)?->input)
+        ->toContain("printf '%s' '' | base64 --decode")
+        ->and($publishCalls->last()?->input)
+        ->toContain(base64_encode($previousConfiguration));
 });
 
 it('validates aggregate FPM candidates and restores the managed pool after activation failure', function (): void {

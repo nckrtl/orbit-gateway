@@ -6,11 +6,12 @@ namespace App\Infrastructure\AppProd;
 
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\AppProd\AppProdPhpFpmManager;
+use App\Infrastructure\Nodes\PhpFpmInstalledProjection;
+use App\Infrastructure\Nodes\PhpFpmPublicationPlan;
 use App\Infrastructure\Nodes\RemotePhpPackageManager;
 use App\Infrastructure\Ssh\RemoteCommand;
 use App\Models\Node;
 use App\Rules\SupportedPhpVersion;
-use Illuminate\Support\Collection;
 
 /** @mago-expect lint:excessive-parameter-list Explicit fixed paths support safe publication and isolated execution tests. */
 final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
@@ -43,25 +44,49 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
             );
         }
 
-        $installedVersions = $this->installedVersions($node);
+        $installedProjection = $this->installedProjection($node);
         $this->packages->installForAppProd($node, $desiredVersions, $this->ssh);
 
-        $versions = $installedVersions
-            ->merge($desiredVersions)
-            ->unique()
-            ->sort()
-            ->values();
+        $desiredPoolVersions = $desiredSites
+            ->mapWithKeys(static fn (AppProdSite $site): array => [$site->poolName() => $site->phpVersion])
+            ->all();
+        $plan = PhpFpmPublicationPlan::from(
+            installed: $installedProjection,
+            desiredPoolVersions: $desiredPoolVersions,
+            poolPattern: '/^\[(orbit-prod-instance-[1-9][0-9]*)\]$/m',
+        );
 
-        foreach ($versions as $version) {
-            $configuration = $this->renderer->render(
-                $desiredSites->where('phpVersion', $version)->values(),
+        $transitionSites = $desiredSites
+            ->reject(static fn (AppProdSite $site): bool => in_array(
+                needle: $site->poolName(),
+                haystack: $plan->movingPoolNames,
+                strict: true,
+            ))
+            ->values();
+        $publishedVersions = [];
+
+        try {
+            foreach ($plan->publications as $publication) {
+                $sites = $publication['retirement'] ? $transitionSites : $desiredSites;
+                $version = $publication['version'];
+                $configuration = $this->renderer->render(
+                    $sites->where('phpVersion', $version)->values(),
+                );
+                $this->publishVersion($node, $version, $configuration);
+                $publishedVersions[] = $version;
+            }
+        } catch (RuntimeConvergenceException $exception) {
+            $recoveryFailure = $this->restorePublishedVersions(
+                node: $node,
+                publishedVersions: $publishedVersions,
+                installedProjection: $installedProjection,
             );
-            $this->publishVersion($node, $version, $configuration);
+
+            throw $recoveryFailure ?? $exception;
         }
     }
 
-    /** @return Collection<int, string> */
-    private function installedVersions(Node $node): Collection
+    private function installedProjection(Node $node): PhpFpmInstalledProjection
     {
         $result = $this->ssh->execute(
             $node,
@@ -71,7 +96,10 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
                     php_root=$1
                     for path in "$php_root"/*/fpm/pool.d/orbit-prod-scopes.conf; do
                         if [ -e "$path" ]; then
-                            basename "$(dirname "$(dirname "$(dirname "$path")")")"
+                            version=$(basename "$(dirname "$(dirname "$(dirname "$path")")")")
+                            printf '%s\t' "$version"
+                            base64 --wrap=0 -- "$path"
+                            printf '\n'
                         fi
                     done
                     BASH,
@@ -79,11 +107,36 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
             step: 'app-prod-php-fpm-discover',
             errorCode: 'app-prod.php_fpm_discovery_failed',
         );
-        $versions = preg_split('/\R/', trim($result->stdout));
 
-        return collect(is_array($versions) ? $versions : [])
-            ->filter(static fn (string $version): bool => preg_match('/\A[0-9]+\.[0-9]+\z/', $version) === 1)
-            ->values();
+        return PhpFpmInstalledProjection::fromDiscoveryOutput($result->stdout);
+    }
+
+    /**
+     * @param  list<string>  $publishedVersions
+     */
+    private function restorePublishedVersions(
+        Node $node,
+        array $publishedVersions,
+        PhpFpmInstalledProjection $installedProjection,
+    ): ?RuntimeConvergenceException {
+        $restoredVersions = [];
+        $recoveryFailure = null;
+
+        foreach (array_reverse($publishedVersions) as $version) {
+            if (($restoredVersions[$version] ?? false) === true) {
+                continue;
+            }
+
+            try {
+                $this->publishVersion($node, $version, $installedProjection->previousConfiguration($version));
+            } catch (RuntimeConvergenceException $exception) {
+                $recoveryFailure ??= $exception;
+            }
+
+            $restoredVersions[$version] = true;
+        }
+
+        return $recoveryFailure;
     }
 
     private function publishVersion(Node $node, string $version, string $configuration): void

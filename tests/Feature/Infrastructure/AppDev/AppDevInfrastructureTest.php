@@ -984,6 +984,115 @@ it('rejects a corrupted instance checkout path before SSH or recursive removal',
         ->toBeEmpty();
 });
 
+it('retires previous app-dev pools before activating their lower PHP version', function (): void {
+    [$node, $instance, $workspace] = app_dev_runtime_models();
+    $sites = new AppDevSiteRepository;
+    $renderer = new AppDevPhpFpmConfigRenderer;
+    $workspace->update(['php_version' => '8.5']);
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $transitionConfiguration = $renderer->render(
+        $sites->forNode($node)->where('phpVersion', '8.5')->values(),
+    );
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+    ]);
+    $manager = new RemoteAppDevPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_dev_ssh($ssh),
+    );
+
+    $manager->converge($node);
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($ssh->commands[0]->input)
+        ->toContain('base64 --wrap=0 -- "$path"')
+        ->and($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4'])
+        ->and($publishCalls->first()?->input)
+        ->toContain(base64_encode($transitionConfiguration))
+        ->not->toContain(base64_encode($previousConfiguration));
+});
+
+it('restores the previous app-dev pools when lower PHP activation fails', function (): void {
+    [$node, $instance, $workspace] = app_dev_runtime_models();
+    $sites = new AppDevSiteRepository;
+    $renderer = new AppDevPhpFpmConfigRenderer;
+    $workspace->update(['php_version' => '8.5']);
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(1, '', 'activation failed', 1, false),
+    ]);
+    $manager = new RemoteAppDevPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_dev_ssh($ssh),
+    );
+
+    expect(fn () => $manager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->errorCode)->toBe('app-dev.php_fpm_config_failed');
+        });
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4', '8.5'])
+        ->and($publishCalls->last()?->input)
+        ->toContain(base64_encode($previousConfiguration));
+});
+
+it('removes a newly activated app-dev pool when later PHP activation fails', function (): void {
+    [$node, $instance, $workspace] = app_dev_runtime_models();
+    $sites = new AppDevSiteRepository;
+    $renderer = new AppDevPhpFpmConfigRenderer;
+    $previousConfiguration = $renderer->render($sites->forNode($node));
+    $instance->update(['php_version' => '8.4']);
+    $workspace->update(['php_version' => '8.6']);
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "8.5\t".base64_encode($previousConfiguration)."\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(1, '', 'activation failed', 1, false),
+    ]);
+    $manager = new RemoteAppDevPhpFpmManager(
+        sites: $sites,
+        renderer: $renderer,
+        ssh: app_dev_ssh($ssh),
+    );
+
+    expect(fn () => $manager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->errorCode)->toBe('app-dev.php_fpm_config_failed');
+        });
+
+    $publishCalls = collect($ssh->commands)
+        ->filter(static fn (RemoteCommand $command): bool => str_contains($command->input ?? '', 'php-fpm.conf'))
+        ->values();
+
+    expect($publishCalls->map(static fn (RemoteCommand $command): string => $command->arguments[4])->all())
+        ->toBe(['8.5', '8.4', '8.6', '8.4', '8.5'])
+        ->and($publishCalls->get(3)?->input)
+        ->toContain("printf '%s' '' | base64 --decode")
+        ->and($publishCalls->last()?->input)
+        ->toContain(base64_encode($previousConfiguration));
+});
+
 it('installs selected PHP versions and validates a complete staged FPM configuration before publication', function (): void {
     [$node] = app_dev_runtime_models(instancePhp: '8.4');
     $ssh = new AppDevFakeSshExecutor([
