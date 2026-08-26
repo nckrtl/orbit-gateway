@@ -89,7 +89,7 @@ it('uses fixed production identity, clone, ownership, and exact removal guards',
         ->toContain(
             'test "$(sudo -u "$user" -H -- git -C "$checkout" remote get-url origin)" = "$repository"',
             'test "$(sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"',
-            'test "$(stat -c %U "$checkout")" = "$user"',
+            'test "$(sudo -u "$user" -H -- stat -c %U "$checkout")" = "$user"',
         )
         ->and($ssh->commands[2]->arguments)
         ->toBe([
@@ -108,7 +108,7 @@ it('uses fixed production identity, clone, ownership, and exact removal guards',
             'sudo -u "$user" -H -- git clone -- "$repository" "$checkout"',
             'sudo -u "$user" -H -- git -C "$checkout" remote get-url origin',
             'sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel',
-            'test "$(stat -c %U "$checkout")" = "$user"',
+            'test "$(sudo -u "$user" -H -- stat -c %U "$checkout")" = "$user"',
             'setfacl -P -R -m u:caddy:--- "$checkout_root"',
             'setfacl -P -R -m u:caddy:r-X "$document_root_real"',
         )
@@ -145,6 +145,64 @@ it('uses fixed production identity, clone, ownership, and exact removal guards',
             'rmdir -- "$app_root"',
         )
         ->not->toContain('userdel -r', 'rm -rf "$app_root"');
+});
+
+it('runs every isolated source probe as the exact app user across clone retry and removal', function (): void {
+    [, $instance] = app_prod_runtime_models();
+    $ssh = new AppDevFakeSshExecutor;
+    $source = new RemoteAppProdSourceManager(app_prod_ssh($ssh));
+
+    $source->converge($instance);
+    $source->remove($instance);
+
+    $driftProbe = $ssh->commands[0]->input ?? '';
+    $converge = $ssh->commands[1]->input ?? '';
+    $remove = $ssh->commands[2]->input ?? '';
+
+    expect($driftProbe)
+        ->toContain(
+            'if ! sudo -u "$user" -H -- test -e "$checkout"; then',
+            'sudo -u "$user" -H -- test -d "$checkout"',
+            'sudo -u "$user" -H -- test ! -L "$checkout"',
+            'sudo -u "$user" -H -- realpath -e "$checkout"',
+            'sudo -u "$user" -H -- stat -c %U "$checkout"',
+            'sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel',
+            'sudo -u "$user" -H -- git -C "$checkout" remote get-url origin',
+        );
+
+    $checkoutProbe = mb_strpos(
+        haystack: $converge,
+        needle: 'if ! sudo -u "$user" -H -- test -e "$checkout"; then',
+    );
+    $clone = mb_strpos(
+        haystack: $converge,
+        needle: 'sudo -u "$user" -H -- git clone -- "$repository" "$checkout"',
+    );
+
+    expect($checkoutProbe)
+        ->toBeInt()
+        ->toBeLessThan($clone)
+        ->and($converge)
+        ->toContain(
+            'sudo -u "$user" -H -- test -f "$checkout/.env"',
+            'sudo -u "$user" -H -- test ! -L "$checkout/.env"',
+            'sudo -u "$user" -H -- realpath -e "$document_root_path"',
+            'sudo -u "$user" -H -- find -P "$document_root_real" -type l -print0',
+            'sudo -u "$user" -H -- realpath -e "$link"',
+            'sudo -u "$user" -H -- test -d "$expected_target"',
+            'sudo -u "$user" -H -- find -P "$expected_target" -type l -print -quit',
+        )
+        ->and($remove)
+        ->toContain(
+            'if ! sudo -u "$user" -H -- test -e "$checkout"; then',
+            'sudo -u "$user" -H -- test -d "$checkout"',
+            'sudo -u "$user" -H -- test ! -L "$checkout"',
+            'sudo -u "$user" -H -- realpath -e "$checkout"',
+            'sudo -u "$user" -H -- stat -c %U "$checkout"',
+            'sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel',
+            'sudo -u "$user" -H -- git -C "$checkout" remote get-url origin',
+            'sudo -u "$user" -H -- rm -rf -- "$checkout"',
+        );
 });
 
 it('rejects an unsafe stored repository origin before app-prod SSH execution', function (): void {

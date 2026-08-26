@@ -72,14 +72,14 @@ final readonly class RemoteAppProdSourceManager implements AppProdSourceManager
                     test "$checkout" = "/var/www/$slug/$instance"
                     test ! -L "/var/www/$slug"
 
-                    if [ ! -e "$checkout" ]; then
+                    if ! sudo -u "$user" -H -- test -e "$checkout"; then
                         exit 0
                     fi
 
-                    test -d "$checkout"
-                    test ! -L "$checkout"
-                    test "$(stat -c %U "$checkout")" = "$user"
-                    test "$(realpath -e "$checkout")" = "$checkout"
+                    sudo -u "$user" -H -- test -d "$checkout"
+                    sudo -u "$user" -H -- test ! -L "$checkout"
+                    test "$(sudo -u "$user" -H -- stat -c %U "$checkout")" = "$user"
+                    test "$(sudo -u "$user" -H -- realpath -e "$checkout")" = "$checkout"
                     test "$(sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"
                     test "$(sudo -u "$user" -H -- git -C "$checkout" remote get-url origin)" = "$repository"
                     sudo -u "$user" -H -- rm -rf -- "$checkout"
@@ -102,14 +102,14 @@ final readonly class RemoteAppProdSourceManager implements AppProdSourceManager
             test "$checkout" = "/var/www/$slug/$instance"
             test ! -L "/var/www/$slug"
 
-            if [ ! -e "$checkout" ]; then
+            if ! sudo -u "$user" -H -- test -e "$checkout"; then
                 exit 0
             fi
 
-            test -d "$checkout"
-            test ! -L "$checkout"
-            test "$(realpath -e "$checkout")" = "$checkout"
-            test "$(stat -c %U "$checkout")" = "$user"
+            sudo -u "$user" -H -- test -d "$checkout"
+            sudo -u "$user" -H -- test ! -L "$checkout"
+            test "$(sudo -u "$user" -H -- realpath -e "$checkout")" = "$checkout"
+            test "$(sudo -u "$user" -H -- stat -c %U "$checkout")" = "$user"
             test "$(sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"
             test "$(sudo -u "$user" -H -- git -C "$checkout" remote get-url origin)" = "$repository"
             BASH;
@@ -131,49 +131,50 @@ final readonly class RemoteAppProdSourceManager implements AppProdSourceManager
             test ! -L "$app_root"
             test "$(stat -c %U "$app_root")" = "$user"
 
-            if [ ! -e "$checkout" ]; then
+            if ! sudo -u "$user" -H -- test -e "$checkout"; then
                 sudo -u "$user" -H -- git clone -- "$repository" "$checkout"
             fi
 
-            test -d "$checkout"
-            test ! -L "$checkout"
-            test "$(realpath -e "$checkout")" = "$checkout"
-            test "$(stat -c %U "$checkout")" = "$user"
+            sudo -u "$user" -H -- test -d "$checkout"
+            sudo -u "$user" -H -- test ! -L "$checkout"
+            test "$(sudo -u "$user" -H -- realpath -e "$checkout")" = "$checkout"
+            test "$(sudo -u "$user" -H -- stat -c %U "$checkout")" = "$user"
             test "$(sudo -u "$user" -H -- git -C "$checkout" rev-parse --show-toplevel)" = "$checkout"
             test "$(sudo -u "$user" -H -- git -C "$checkout" remote get-url origin)" = "$repository"
             sudo chmod 0700 -- "$checkout"
-            if [ -f "$checkout/.env" ] && [ ! -L "$checkout/.env" ]; then
+            if sudo -u "$user" -H -- test -f "$checkout/.env" \
+                && sudo -u "$user" -H -- test ! -L "$checkout/.env"; then
                 sudo chmod 0600 -- "$checkout/.env"
             fi
 
-            checkout_root=$(realpath -e "$checkout")
+            checkout_root=$(sudo -u "$user" -H -- realpath -e "$checkout")
             sudo setfacl -P -R -m u:caddy:--- "$checkout_root"
             sudo find -P "$checkout_root" -type d -exec setfacl -m d:u:caddy:--- -- {} +
             document_root_path="$checkout/$document_root"
-            test -d "$document_root_path"
-            test ! -L "$document_root_path"
-            document_root_real=$(realpath -e "$document_root_path")
+            sudo -u "$user" -H -- test -d "$document_root_path"
+            sudo -u "$user" -H -- test ! -L "$document_root_path"
+            document_root_real=$(sudo -u "$user" -H -- realpath -e "$document_root_path")
             case "$document_root_real" in
                 "$checkout_root"|"$checkout_root"/*) ;;
                 *) exit 1 ;;
             esac
             storage_target=
             while IFS= read -r -d '' link; do
-                target=$(realpath -e "$link")
+                target=$(sudo -u "$user" -H -- realpath -e "$link")
                 expected_link="$checkout_root/public/storage"
                 expected_target="$checkout_root/storage/app/public"
                 test "$document_root_real" = "$checkout_root/public"
                 test "$link" = "$expected_link"
                 test "$target" = "$expected_target"
-                test -d "$expected_target"
-                test ! -L "$checkout_root/storage"
-                test ! -L "$checkout_root/storage/app"
-                test ! -L "$expected_target"
-                if find -P "$expected_target" -type l -print -quit | grep -q .; then
+                sudo -u "$user" -H -- test -d "$expected_target"
+                sudo -u "$user" -H -- test ! -L "$checkout_root/storage"
+                sudo -u "$user" -H -- test ! -L "$checkout_root/storage/app"
+                sudo -u "$user" -H -- test ! -L "$expected_target"
+                if sudo -u "$user" -H -- find -P "$expected_target" -type l -print -quit | grep -q .; then
                     exit 1
                 fi
                 storage_target=$expected_target
-            done < <(find -P "$document_root_real" -type l -print0)
+            done < <(sudo -u "$user" -H -- find -P "$document_root_real" -type l -print0)
             sudo setfacl -m u:caddy:--x /var/www "$app_root" "$checkout_root"
             sudo setfacl -P -R -m u:caddy:r-X "$document_root_real"
             sudo find -P "$document_root_real" -type d -exec setfacl -m d:u:caddy:r-x -- {} +
