@@ -6,4 +6,4 @@ paths:
 
 ## APIs & Eloquent Resources
 
-- For APIs, default to using Eloquent API Resources and API versioning unless existing API routes do not, then you should follow existing application convention.
+- Keep the versioned Gateway API consistent with its existing typed Spatie Data response objects. Do not introduce Eloquent Resources beside the established contract without an explicit API migration.

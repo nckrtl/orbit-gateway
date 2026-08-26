@@ -29,7 +29,9 @@ it('enables durable rules and scoped guideline extraction', function (): void {
         ->toBe([
             'enabled' => true,
             'scoped_guidelines' => true,
-        ]);
+        ])
+        ->and($configuration['enforce_tests'] ?? null)
+        ->toBeTrue();
 });
 
 it('requires the committed rule index and every indexed rule file before edits', function () use (
@@ -53,6 +55,9 @@ it('requires the committed rule index and every indexed rule file before edits',
         '.ai/rules/boost/http-routes.md',
         '.ai/rules/boost/models.md',
         '.ai/rules/boost/tests.md',
+        '.ai/rules/bootstrap.md',
+        '.ai/rules/database.md',
+        '.ai/rules/http.md',
         '.ai/rules/infrastructure.md',
         '.ai/rules/tests.md',
     ];
@@ -129,10 +134,11 @@ it('requires the committed rule index and every indexed rule file before edits',
         ->toBeString()
         ->toContain(
             '## Required Guidance Bootstrap',
-            '`.ai/rules/index.md` and every rule file indexed by it are required repository state.',
-            'If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete.',
-            'Read every indexed rule whose globs match the files in scope before planning or editing.',
-            'Stop and restore or regenerate the guidance before continuing.',
+            'composer guidance:check',
+            'composer guidance:update',
+            'Make no product-code edits while this check fails.',
+            'Never silently continue when',
+            'the required project guidance is incomplete.',
         )
         ->not->toContain(
             'in `.ai/rules` when that directory exists',
@@ -144,9 +150,10 @@ it('requires the committed rule index and every indexed rule file before edits',
         ->toBeString()
         ->toContain(
             '## Required Guidance Bootstrap',
-            '`.ai/rules/index.md` and every rule file indexed by it are required repository state.',
-            'Agents must restore or regenerate the guidance before editing.',
-            'Never silently continue when the required project rules are absent.',
+            'Restore only the affected tracked guidance path from the current branch.',
+            'Boost cannot recreate deleted project-owned rules.',
+            'Never silently continue when',
+            'the required project guidance is incomplete.',
         );
 });
 
@@ -183,10 +190,13 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
     $index = $readProjectFile('.ai/rules/index.md');
 
     expect($index)->toContain(
-        '| app/** | .ai/rules/app.md |',
+        '| app/Actions/**, app/Data/**, app/Domain/**, app/Exceptions/**, app/Infrastructure/**, app/Rules/** | .ai/rules/app.md |',
         '| app/Http/**, routes/** | .ai/rules/boost/http-routes.md |',
         '| app/Models/** | .ai/rules/boost/models.md |',
         '| tests/** | .ai/rules/boost/tests.md |',
+        '| app/Console/**, app/Providers/**, bootstrap/**, config/**, AGENTS.md, boost.json, composer.json, composer.lock, .ai/**, .agents/**, .codex/** | .ai/rules/bootstrap.md |',
+        '| app/Models/**, database/** | .ai/rules/database.md |',
+        '| app/Http/**, routes/** | .ai/rules/http.md |',
         '| app/Infrastructure/** | .ai/rules/infrastructure.md |',
         '| tests/** | .ai/rules/tests.md |',
     );
@@ -194,10 +204,10 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
     expect($readProjectFile('.ai/rules/boost/http-routes.md'))
         ->toContain(
             '## APIs & Eloquent Resources',
-            'default to using Eloquent API Resources and API versioning',
+            'existing typed Spatie Data response objects',
         );
     expect($readProjectFile('.ai/rules/boost/models.md'))
-        ->toContain('### Model Creation', 'create useful factories and seeders');
+        ->toContain('### Model Creation', 'Add a factory or seeder only when');
     expect($readProjectFile('.ai/rules/boost/tests.md'))
         ->toContain(
             '# Pest',
@@ -209,11 +219,25 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         );
 
     $appRules = $readProjectFile('.ai/rules/app.md');
+    $bootstrapRules = $readProjectFile('.ai/rules/bootstrap.md');
+    $databaseRules = $readProjectFile('.ai/rules/database.md');
+    $httpRules = $readProjectFile('.ai/rules/http.md');
     $infrastructureRules = $readProjectFile('.ai/rules/infrastructure.md');
     $testRules = $readProjectFile('.ai/rules/tests.md');
-    $projectRules = implode("\n", [$appRules, $infrastructureRules, $testRules]);
+    $projectRules = implode("\n", [
+        $appRules,
+        $bootstrapRules,
+        $databaseRules,
+        $httpRules,
+        $infrastructureRules,
+        $testRules,
+    ]);
     $expectedDecisionHeadings = [
+        '## Keep Gateway application boundaries explicit',
         '## Respect Linux and Darwin privilege boundaries',
+        '## Treat incomplete guidance as a bootstrap failure',
+        '## Preserve control-plane data',
+        '## Keep the API contract authenticated and redacted',
         '## Use fixed typed argv',
         '## Keep secrets out of command arguments',
         '## Publish managed state atomically',
@@ -226,6 +250,23 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
     }
 
     expect($appRules)->toContain('pinned gateway SSH', 'Darwin actions', 'local macOS adapter');
+    expect($bootstrapRules)
+        ->toContain(
+            'composer guidance:check',
+            'composer guidance:update',
+            'Restore the exact tracked guidance paths',
+            'no product-code edits',
+        );
+    expect($databaseRules)
+        ->toContain('SQLite', 'migration', 'preserve existing control-plane state');
+    expect($httpRules)
+        ->toContain(
+            'active WireGuard peer',
+            'typed data objects',
+            'stable error envelopes',
+            'redact',
+            'colon-delimited route names',
+        );
     expect($infrastructureRules)
         ->toContain(
             'fixed, typed argv',
@@ -274,12 +315,53 @@ it('preserves project and installed testing guidance', function (): void {
     expect($readProjectFile('boost.json'))
         ->toContain(
             '"laravel-best-practices"',
+            '"orbit-gateway-development"',
             '"testing-best-practices"',
             '"pest-testing"',
             '"spatie-laravel-php"',
             '"spatie-security"',
             '"spatie-version-control"',
         );
+
+    expect($readProjectFile('.ai/skills/orbit-gateway-development/SKILL.md'))
+        ->toBe($readProjectFile('.agents/skills/orbit-gateway-development/SKILL.md'));
+    expect($readProjectFile('.ai/skills/pest-testing/SKILL.md'))
+        ->toBe($readProjectFile('.agents/skills/pest-testing/SKILL.md'))
+        ->toContain('Pest 5', 'Test Impact Analysis', '--no-tia')
+        ->not->toContain('browser testing', 'Livewire', 'Inertia');
+    expect($readProjectFile('.ai/skills/spatie-security/SKILL.md'))
+        ->toBe($readProjectFile('.agents/skills/spatie-security/SKILL.md'));
+    expect($readProjectFile('.ai/skills/spatie-security/references/spatie-security-guidelines.md'))
+        ->toBe($readProjectFile('.agents/skills/spatie-security/references/spatie-security-guidelines.md'));
+
+    expect($readProjectFile('.codex/config.toml'))
+        ->toContain(
+            '[mcp_servers.laravel-boost]',
+            'command = "php"',
+            'args = ["artisan", "boost:mcp"]',
+        );
+
+    /** @var array<string, mixed> $composer */
+    $composer = json_decode(
+        json: $readProjectFile('composer.json'),
+        associative: true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect($composer['scripts']['guidance:check'] ?? null)
+        ->toBe(
+            'vendor/bin/pest --no-tia --compact tests/Unit/Configuration/BoostConfigurationTest.php tests/Feature/Configuration/BoostGuidanceTest.php',
+        )
+        ->and($composer['scripts']['guidance:update'] ?? null)
+        ->toBe([
+            '@guidance:check',
+            '@php artisan boost:update --no-discover --no-interaction',
+            '@guidance:check',
+        ])
+        ->and($composer['scripts']['check'][0] ?? null)
+        ->toBe('@guidance:check')
+        ->and($composer['scripts']['post-autoload-dump'] ?? null)
+        ->not->toContain('@guidance:check');
 
     expect($readProjectFile('.agents/skills/testing-best-practices/rules/assertions.md'))
         ->toContain('`assertModelExists($model)`');

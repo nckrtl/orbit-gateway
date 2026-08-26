@@ -50,6 +50,7 @@
         ],
         "analyse": "vendor/bin/mago analyze app routes database/migrations --reporting-format=medium",
         "check": [
+            "@guidance:check",
             "@rector",
             "@test",
             "@format:check",
@@ -58,6 +59,12 @@
         ],
         "format": "vendor/bin/mago format",
         "format:check": "vendor/bin/mago format --check",
+        "guidance:check": "vendor/bin/pest --no-tia --compact tests/Unit/Configuration/BoostConfigurationTest.php tests/Feature/Configuration/BoostGuidanceTest.php",
+        "guidance:update": [
+            "@guidance:check",
+            "@php artisan boost:update --no-discover --no-interaction",
+            "@guidance:check"
+        ],
         "lint": "vendor/bin/mago lint app routes database/migrations tests --reporting-format=medium",
         "rector": "vendor/bin/rector process",
         "test": "vendor/bin/pest --compact",

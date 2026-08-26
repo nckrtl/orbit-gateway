@@ -5,4 +5,4 @@ paths:
 
 ### Model Creation
 
-- When creating new models, create useful factories and seeders for them too. Ask the user if they need any other things, using `php artisan make:model --help` to check the available options.
+- Keep models focused on persisted control-plane state. Add a factory or seeder only when an executing test or explicit bootstrap workflow needs it.

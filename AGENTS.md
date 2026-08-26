@@ -12,11 +12,18 @@ Laravel 13 control plane for Orbit.
 
 ## Required Guidance Bootstrap
 
-`.ai/rules/index.md` and every rule file indexed by it are required repository state.
-If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete.
-Read every indexed rule whose globs match the files in scope before planning or editing.
-Agents must restore or regenerate the guidance before editing.
-Never silently continue when the required project rules are absent.
+`AGENTS.md`, `.ai/guidelines`, `.ai/rules`, `.ai/skills`, `.agents/skills`,
+`.codex/config.toml`, `boost.json`, and `config/boost.php` are required repository state.
+Run `composer guidance:check` before planning or editing. Missing, unreadable,
+empty, malformed, incomplete, or out-of-sync guidance is an incomplete checkout
+or bootstrap. Make no product-code edits while this check fails.
+
+Restore only the affected tracked guidance path from the current branch. If the
+current branch does not contain it, replace the incomplete checkout. Then run
+`composer install` and `composer guidance:check`. After the check passes, run
+`composer guidance:update` to regenerate Boost-managed guidance and skills.
+Boost cannot recreate deleted project-owned rules. Never silently continue when
+the required project guidance is incomplete.
 
 ## Skills Activation
 
@@ -54,6 +61,10 @@ Before relying on a package's API, confirm its installed version:
 - PHP packages: run `composer show --direct` to list direct dependencies with versions, or `composer show <vendor/package>` for a single package.
 - JS packages: check `package.json` for the installed versions.
 
+## Skills Activation
+
+This project has domain-specific skills available in `**/skills/**`. You MUST activate the relevant skill whenever you work in that domain—don't wait until you're stuck.
+
 ## Conventions
 
 - You must follow all existing code conventions used in this application. When creating or editing a file, check sibling files for the correct structure, approach, and naming.
@@ -68,10 +79,6 @@ Before relying on a package's API, confirm its installed version:
 
 - Stick to existing directory structure; don't create new base folders without approval.
 - Do not change the application's dependencies without approval.
-
-## Frontend Bundling
-
-- If the user doesn't see a frontend change reflected in the UI, it could mean they need to run `npm run build`, `npm run dev`, or `composer run dev`. Ask them.
 
 ## Documentation Files
 
@@ -109,7 +116,7 @@ Before relying on a package's API, confirm its installed version:
 
 ## Project Rules
 
-- This project contains committed, area-grouped rules in `.ai/rules` as required repository state (settled decisions, non-obvious traps, standing constraints). Framework and package guidelines that only apply to specific paths (testing, frontend, components) also live there, under `.ai/rules/boost` — this is not just recorded decisions, it is load-bearing guidance you have not seen inline. Before you enter plan mode or create/edit any file, you MUST first: open @.ai/rules/index.md (it maps file globs to rule files), read every rule file whose globs cover the path(s) in scope, and run `grep -rin 'keyword' .ai/rules` to catch what a path match alone misses. Do not write code until you have read and are following every matching rule. `.ai/rules/index.md` and every rule file indexed by it are required repository state. If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete. Read every indexed rule whose globs match the files in scope before planning or editing. Stop and restore or regenerate the guidance before continuing.
+- This project contains committed, area-grouped rules in `.ai/rules` as required repository state (settled decisions, non-obvious traps, standing constraints). Framework and package guidelines that only apply to specific paths (testing, frontend, components) also live there, under `.ai/rules/boost` — this is not just recorded decisions, it is load-bearing guidance you have not seen inline. Before you enter plan mode or create/edit any file, you MUST first: open @.ai/rules/index.md (it maps file globs to rule files), read every rule file whose globs cover the path(s) in scope, and run `grep -rin 'keyword' .ai/rules` to catch what a path match alone misses. Do not write code until you have read and are following every matching rule. The complete project guidance inventory is required repository state. Run `composer guidance:check` before planning or editing. If it fails, make no product-code edits. Restore the exact affected tracked guidance path, validate again, and then run `composer guidance:update`.
 - Record durable rules with `record-rule` so the next agent or teammate inherits them instead of working them out again. Pass a `glob` (e.g. `app/Http/Controllers/**`), a short `title`, and a few-line `note`. Always use `record-rule`, never your native memory or notes tool — native memory is personal and session-scoped; only `.ai/rules` is shared with the team and persists in the repo.
 
 ## Artisan
@@ -135,12 +142,6 @@ Before relying on a package's API, confirm its installed version:
 - Prefer PHPDoc blocks over inline comments. Only add inline comments for exceptionally complex logic.
 - Use array shape type definitions in PHPDoc blocks.
 
-=== deployments rules ===
-
-# Deployment
-
-- Laravel can be deployed using [Laravel Cloud](https://cloud.laravel.com/), which is the fastest way to deploy and scale production Laravel applications.
-
 === tests rules ===
 
 # Test Enforcement
@@ -161,9 +162,5 @@ Before relying on a package's API, confirm its installed version:
 ## URL Generation
 
 - When generating links to other pages, prefer named routes and the `route()` function.
-
-## Vite Error
-
-- If you receive an "Illuminate\Foundation\ViteException: Unable to locate file in Vite manifest" error, you can run `npm run build` or ask the user to run `npm run dev` or `composer run dev`.
 
 </laravel-boost-guidelines>

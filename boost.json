@@ -16,6 +16,7 @@
         "pest-testing",
         "spatie-laravel-php",
         "spatie-security",
-        "spatie-version-control"
+        "spatie-version-control",
+        "orbit-gateway-development"
     ]
 }
