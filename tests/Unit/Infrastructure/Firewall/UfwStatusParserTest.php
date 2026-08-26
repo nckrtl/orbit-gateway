@@ -74,6 +74,48 @@ it('requires the exact managed destination and interface shape', function (): vo
     expect(new UfwStatusParser()->ownership($output, $expected))->toBe(UfwRuleOwnership::Exact);
 });
 
+it('parses managed interface rules when a full target column leaves one action separator', function (): void {
+    $output = <<<'OUTPUT'
+        Status: active
+
+             To                         Action      From
+             --                         ------      ----
+        [ 2] 10.44.0.3 80/tcp on orbit  ALLOW IN    Anywhere                   # orbit:app-dev-http
+        [ 3] 10.44.0.3 443/tcp on orbit ALLOW IN    Anywhere                   # orbit:app-dev-https
+        OUTPUT;
+
+    $http = new UfwRuleShape(
+        comment: 'orbit:app-dev-http',
+        action: 'allow',
+        direction: 'in',
+        source: 'any',
+        destination: '10.44.0.3',
+        port: '80',
+        protocol: 'tcp',
+        inInterface: 'orbit',
+        outInterface: null,
+        family: 'v4',
+    );
+    $https = new UfwRuleShape(
+        comment: 'orbit:app-dev-https',
+        action: 'allow',
+        direction: 'in',
+        source: 'any',
+        destination: '10.44.0.3',
+        port: '443',
+        protocol: 'tcp',
+        inInterface: 'orbit',
+        outInterface: null,
+        family: 'v4',
+    );
+    $parser = new UfwStatusParser;
+
+    expect($parser->ownership($output, $http))
+        ->toBe(UfwRuleOwnership::Exact)
+        ->and($parser->ownership($output, $https))
+        ->toBe(UfwRuleOwnership::Exact);
+});
+
 it('requires the exact managed forwarding interfaces and endpoints', function (): void {
     $output = <<<'OUTPUT'
         Status: active
@@ -124,6 +166,12 @@ it('reports same-comment broader and ambiguous shapes as drift', function (strin
     ],
     'unparseable managed line' => [
         '[ 1] OpenSSH                     ALLOW IN    Anywhere                   # orbit:vpn-wireguard',
+    ],
+    'unparseable compact managed line' => [
+        '[ 1] OpenSSH ALLOW IN Anywhere # orbit:vpn-wireguard',
+    ],
+    'ambiguous action delimiter' => [
+        '[ 1] 51820/udp ALLOW IN Anywhere ALLOW IN Anywhere # orbit:vpn-wireguard',
     ],
 ]);
 

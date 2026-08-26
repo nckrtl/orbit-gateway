@@ -68,7 +68,7 @@ final class UfwStatusParser
     {
         $matches = [];
         $matched = preg_match(
-            '/\A(?:\[\s*\d+\]\s+)?(.+?)\s{2,}(ALLOW|DENY)\s+(IN|OUT|FWD)\s{2,}(.+?)(?:\s{2,}#\s*(.*))?\z/D',
+            '/\A(?:\[\s*\d+\]\s+)?(.+?)\s+(ALLOW|DENY)\s+(IN|OUT|FWD)\s+(.+?)(?:\s+#\s*(.*))?\z/D',
             trim($line),
             $matches,
         );
