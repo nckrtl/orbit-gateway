@@ -234,7 +234,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
     ]);
     $expectedDecisionHeadings = [
         '## Keep Gateway application boundaries explicit',
-        '## Respect Linux and Darwin privilege boundaries',
+        '## Keep Linux privilege boundaries narrow',
         '## Treat incomplete guidance as a bootstrap failure',
         '## Preserve control-plane data',
         '## Keep the API contract authenticated and redacted',
@@ -249,7 +249,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         expect(substr_count(haystack: $projectRules, needle: $expectedDecisionHeading))->toBe(1);
     }
 
-    expect($appRules)->toContain('pinned gateway SSH', 'Darwin actions', 'local macOS adapter');
+    expect($appRules)->toContain('pinned gateway SSH', 'explicit narrow sudo');
     expect($bootstrapRules)
         ->toContain(
             'composer guidance:check',
@@ -380,8 +380,7 @@ it('preserves project and installed testing guidance', function (): void {
             'secrets out of local and remote argument arrays',
             'Require exact Orbit ownership before mutation.',
             'Linux privilege escalation',
-            'Darwin',
-            'search `~/orbit-old`',
+            'search `/home/nckrtl/orbit`',
             'Pest 5 with TIA',
             'Mago format/lint/analyse',
         );

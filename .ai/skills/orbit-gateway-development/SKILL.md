@@ -24,10 +24,9 @@ business logic and performs explicit infrastructure actions over SSH.
   snapshot it after lock acquisition, validate a candidate, switch atomically,
   and restore the exact previous state when activation fails.
 - Use systemd for Linux services. Do not add Docker/Swarm gateway deployment,
-  an Agent, a hidden executor, generic scripts, or unattended macOS elevation.
-- Keep Linux privilege escalation behind narrow remote commands. Keep Darwin
-  privilege-sensitive actions in the local macOS adapter.
-- Before designing infrastructure behavior, search `~/orbit-old` for its
+  an Agent, a hidden executor, or generic scripts.
+- Keep Linux privilege escalation behind narrow remote commands.
+- Before designing infrastructure behavior, search `/home/nckrtl/orbit` for its
   implementation and tests. Port compatible invariants, not retired topology.
 
 ## Required skills

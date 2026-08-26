@@ -17,7 +17,6 @@ final class ProvisionNodeCommand extends Command
         {host : Public SSH host}
         {--ssh-port=22 : Public SSH port}
         {--ssh-user=root : Initial SSH user}
-        {--platform=linux : Node platform (linux or darwin)}
         {--architecture= : Node machine architecture}
         {--tld= : Unique development TLD for app-dev}
         {--role=* : Initial role assignment}
@@ -53,7 +52,7 @@ final class ProvisionNodeCommand extends Command
             wireguardEndpointOverride: $this->stringOption('wireguard-endpoint'),
             dnsServerOverride: $this->stringOption('dns-server'),
             expectedSshHostFingerprint: $this->stringOption('host-key-fingerprint'),
-            platform: $this->stringOption('platform') ?? 'linux',
+            platform: 'linux',
             architecture: $this->stringOption('architecture'),
             tld: $this->stringOption('tld'),
         ));

@@ -19,7 +19,6 @@ it('provisions the first peer from the gateway console', function (): void {
             'name' => 'operator',
             'host' => '94.237.108.25',
             '--role' => ['app-dev'],
-            '--platform' => 'linux',
             '--architecture' => 'x86_64',
             '--tld' => '.Operator.Orbit',
             '--wireguard-address' => '10.44.0.2',

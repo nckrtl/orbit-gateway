@@ -383,7 +383,7 @@ describe('instance API', function (): void {
             ->toBeEmpty();
     })->with([
         'inactive node' => [['status' => LifecycleStatus::Failed], [RoleName::AppProd], 'instance.node_inactive'],
-        'unsupported platform' => [['platform' => 'darwin'], [RoleName::AppProd], 'instance.platform_unsupported'],
+        'unsupported platform' => [['platform' => 'windows'], [RoleName::AppProd], 'instance.platform_unsupported'],
         'no app role' => [[], [], 'instance.node_not_app_host'],
         'conflicting app roles' => [[], [RoleName::AppDev, RoleName::AppProd], 'instance.app_role_ambiguous'],
     ]);

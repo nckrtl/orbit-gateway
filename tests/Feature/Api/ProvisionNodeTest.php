@@ -256,52 +256,19 @@ describe('POST /api/v1/nodes', function (): void {
             ->assertJsonPath('error.code', 'validation.failed');
     });
 
-    it('registers Darwin app-dev work as provisioning for a later local action', function (): void {
-        $converger = new class implements NodeConverger {
-            public int $calls = 0;
-
-            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
-            {
-                $this->calls++;
-            }
-        };
-        app()->instance(NodeConverger::class, $converger);
-
+    it('rejects non-Linux nodes at the API boundary', function (): void {
         $this
             ->postJson('/api/v1/nodes', [
                 'name' => 'mac-dev',
-                'platform' => 'darwin',
+                'public_ssh_host' => '192.0.2.46',
+                'platform' => 'windows',
                 'architecture' => 'arm64',
                 'tld' => 'mac.test',
                 'roles' => ['app-dev'],
-            ])
-            ->assertCreated()
-            ->assertJsonPath('data.status', 'provisioning')
-            ->assertJsonPath('data.platform', 'darwin')
-            ->assertJsonPath('data.architecture', 'arm64')
-            ->assertJsonPath('data.tld', 'mac.test')
-            ->assertJsonPath('data.public_ssh_host', '10.44.0.1')
-            ->assertJsonPath('data.roles.0', 'app-dev');
-
-        $node = Node::query()->where('name', 'mac-dev')->sole();
-
-        expect($node->roles()->sole()->status)
-            ->toBe(LifecycleStatus::Provisioning)
-            ->and($converger->calls)
-            ->toBe(0);
-    });
-
-    it('returns a stable error when Darwin architecture is missing', function (): void {
-        $this
-            ->postJson('/api/v1/nodes', [
-                'name' => 'mac-dev',
-                'public_ssh_host' => '10.44.0.8',
-                'platform' => 'darwin',
-                'tld' => 'mac.test',
-                'roles' => ['app-dev'],
+                'host_key_fingerprint' => 'SHA256:'.str_repeat(string: 'A', times: 43),
             ])
             ->assertUnprocessable()
-            ->assertJsonPath('error.code', 'node.architecture_required');
+            ->assertJsonPath('error.code', 'validation.failed');
 
         expect(Node::query()->where('name', 'mac-dev')->exists())->toBeFalse();
     });

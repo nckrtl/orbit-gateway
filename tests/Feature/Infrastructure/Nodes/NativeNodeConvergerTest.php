@@ -25,7 +25,7 @@ use Tests\Support\NodeExecutingInactiveUfwSshExecutor;
 
 it('fails closed before SSH when no host adapter supports the node platform', function (): void {
     $node = provisionable_node(role: RoleName::AppDev);
-    $node->update(['platform' => 'darwin']);
+    $node->update(['platform' => 'windows']);
     $scans = 0;
     $scanner = new class($scans) implements HostKeyScanner {
         public function __construct(

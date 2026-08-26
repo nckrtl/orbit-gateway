@@ -266,7 +266,7 @@ describe(ProvisionNodeAction::class, function (): void {
             ->toBe(0);
     });
 
-    it('keeps a Darwin app-dev registration provisioning for local setup', function (): void {
+    it('rejects non-Linux nodes before persistence or convergence', function (): void {
         $converger = new class implements NodeConverger {
             public int $calls = 0;
 
@@ -277,21 +277,19 @@ describe(ProvisionNodeAction::class, function (): void {
         };
         app()->instance(NodeConverger::class, $converger);
 
-        $node = app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
+        expect(fn () => app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
             name: 'mac-dev',
             publicSshHost: '10.44.0.8',
             roles: [RoleName::AppDev],
-            platform: 'darwin',
+            platform: 'windows',
             architecture: 'arm64',
             tld: 'mac.test',
-        ));
+        )))->toThrow(function (ResourceOperationException $exception): void {
+            expect($exception->errorCode)->toBe('node.platform_unsupported');
+        });
 
-        expect($node->status)
-            ->toBe(LifecycleStatus::Provisioning)
-            ->and($node->roles()->sole()->status)
-            ->toBe(LifecycleStatus::Provisioning)
-            ->and($node->ssh_host_fingerprint)
-            ->toBeNull()
+        expect(Node::query()->where('name', 'mac-dev')->exists())
+            ->toBeFalse()
             ->and($converger->calls)
             ->toBe(0)
             ->and($this->privateDns->calls)
@@ -312,24 +310,6 @@ describe(ProvisionNodeAction::class, function (): void {
         });
 
         expect(Node::query()->where('name', 'linux-node')->exists())->toBeFalse();
-    });
-
-    it('requires the real architecture for Darwin registration', function (): void {
-        app()->instance(NodeConverger::class, new class implements NodeConverger {
-            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
-        });
-
-        expect(fn () => app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
-            name: 'mac-dev',
-            publicSshHost: '10.44.0.8',
-            roles: [RoleName::AppDev],
-            platform: 'darwin',
-            tld: 'mac.test',
-        )))->toThrow(function (ResourceOperationException $exception): void {
-            expect($exception->errorCode)->toBe('node.architecture_required');
-        });
-
-        expect(Node::query()->where('name', 'mac-dev')->exists())->toBeFalse();
     });
 
     it('marks the node and roles failed when private DNS projection fails', function (): void {

@@ -87,10 +87,6 @@ final readonly class ProvisionNodeAction
                 'error_code' => null,
             ]);
 
-            if ($platform === 'darwin' && $this->hasAppDevRole($node, $data)) {
-                return $node->refresh()->load('roles');
-            }
-
             $this->converger->converge($node, $data->expectedSshHostFingerprint);
 
             if ($this->hasAppDevRole($node, $data)) {
@@ -193,11 +189,18 @@ final readonly class ProvisionNodeAction
 
     private function platform(Node $node, ProvisionNodeData $data): string
     {
-        if ($node->exists && $node->platform !== '') {
-            return $node->platform;
+        $platform = $node->exists && $node->platform !== ''
+            ? $node->platform
+            : $data->platform;
+
+        if ($platform !== 'linux') {
+            throw new ResourceOperationException(
+                errorCode: 'node.platform_unsupported',
+                message: "Node platform [{$platform}] is not supported.",
+            );
         }
 
-        return $data->platform;
+        return $platform;
     }
 
     private function architecture(Node $node, ProvisionNodeData $data): string

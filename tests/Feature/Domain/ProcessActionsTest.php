@@ -371,7 +371,7 @@ it('rejects workspace process targets on app-prod nodes', function (): void {
 });
 
 it('rejects process targets on non-Linux nodes before runtime execution', function (): void {
-    $this->node->update(['platform' => 'darwin']);
+    $this->node->update(['platform' => 'windows']);
     $data = new AddProcessData(
         targetType: ProcessTargetType::Instance,
         targetId: $this->instance->id,

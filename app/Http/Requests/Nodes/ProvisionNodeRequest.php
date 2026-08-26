@@ -67,7 +67,7 @@ final class ProvisionNodeRequest extends FormRequest
                 'string',
                 'max:255',
             ],
-            'platform' => ['sometimes', 'string', Rule::in(['linux', 'darwin'])],
+            'platform' => ['sometimes', 'string', Rule::in(['linux'])],
             'architecture' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_.-]{1,64}\z/D'],
             'tld' => [
                 'nullable',
@@ -151,10 +151,6 @@ final class ProvisionNodeRequest extends FormRequest
 
     private function requiresPublicSshHost(): bool
     {
-        if ($this->input('platform') === 'darwin') {
-            return false;
-        }
-
         /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
         $name = $this->input('name');
 
