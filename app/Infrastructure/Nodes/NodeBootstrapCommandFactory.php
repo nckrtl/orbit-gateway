@@ -100,14 +100,6 @@ final readonly class NodeBootstrapCommandFactory
                 'composer',
                 'docker.io',
                 'openssl',
-                'php8.5-cli',
-                'php8.5-curl',
-                'php8.5-fpm',
-                'php8.5-intl',
-                'php8.5-mbstring',
-                'php8.5-sqlite3',
-                'php8.5-xml',
-                'php8.5-zip',
                 'unzip',
             ];
         }

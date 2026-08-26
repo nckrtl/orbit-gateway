@@ -6,6 +6,7 @@ namespace App\Infrastructure\AppProd;
 
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\AppProd\AppProdPhpFpmManager;
+use App\Infrastructure\Nodes\RemotePhpPackageManager;
 use App\Infrastructure\Ssh\RemoteCommand;
 use App\Models\Node;
 use App\Rules\SupportedPhpVersion;
@@ -21,6 +22,7 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
         private string $phpRoot = '/etc/php',
         private string $lockDirectory = '/run/lock',
         private string $logDirectory = '/var/log/orbit/php-fpm',
+        private RemotePhpPackageManager $packages = new RemotePhpPackageManager,
     ) {}
 
     public function converge(Node $node): void
@@ -41,10 +43,7 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
         }
 
         $installedVersions = $this->installedVersions($node);
-
-        foreach ($desiredVersions as $version) {
-            $this->installVersion($node, $version);
-        }
+        $this->packages->installForAppProd($node, $desiredVersions, $this->ssh);
 
         $versions = $installedVersions
             ->merge($desiredVersions)
@@ -84,36 +83,6 @@ final readonly class RemoteAppProdPhpFpmManager implements AppProdPhpFpmManager
         return collect(is_array($versions) ? $versions : [])
             ->filter(static fn (string $version): bool => preg_match('/\A[0-9]+\.[0-9]+\z/', $version) === 1)
             ->values();
-    }
-
-    private function installVersion(Node $node, string $version): void
-    {
-        $this->ssh->execute(
-            $node,
-            new RemoteCommand(
-                arguments: ['bash', '-seu', '--', $version],
-                input: <<<'BASH'
-                    version=$1
-
-                    if command -v "php-fpm$version" >/dev/null 2>&1; then
-                        exit 0
-                    fi
-
-                    sudo env DEBIAN_FRONTEND=noninteractive apt-get update
-                    sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends -- \
-                        "php$version-cli" \
-                        "php$version-curl" \
-                        "php$version-fpm" \
-                        "php$version-intl" \
-                        "php$version-mbstring" \
-                        "php$version-sqlite3" \
-                        "php$version-xml" \
-                        "php$version-zip"
-                    BASH,
-            ),
-            step: 'app-prod-php-fpm-install',
-            errorCode: 'app-prod.php_install_failed',
-        );
     }
 
     private function publishVersion(Node $node, string $version, string $configuration): void

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\AppProd\AppProdCaddyManager;
 use App\Domain\AppProd\AppProdPhpFpmManager;
 use App\Domain\AppProd\AppProdSourceManager;
@@ -250,6 +251,8 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
     [$node] = app_prod_runtime_models();
     $ssh = new AppDevFakeSshExecutor([
         new CommandResult(0, "8.4\n", '', 1, false),
+        new CommandResult(0, "8.5\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
     ]);
     $manager = new RemoteAppProdPhpFpmManager(
         sites: new AppProdSiteRepository,
@@ -260,12 +263,20 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
     $manager->converge($node);
 
     expect($ssh->commands)
-        ->toHaveCount(4)
+        ->toHaveCount(6)
         ->and($ssh->commands[1]->arguments)
         ->toContain('8.5')
         ->and($ssh->commands[1]->input)
-        ->toContain('apt-get install', 'php$version-fpm')
+        ->toContain('/usr/sbin/php-fpm$version')
+        ->and($ssh->commands[2]->input)
+        ->toContain('apt-cache policy -- "$package"')
         ->and($ssh->commands[3]->input)
+        ->toContain(
+            'apt-get -o DPkg::Lock::Timeout=300 install',
+            'php$version-cli',
+            'php$version-fpm',
+        )
+        ->and($ssh->commands[5]->input)
         ->toContain(
             'exec 9>"$lock_directory/orbit-php-fpm-$version.lock"',
             'flock -w 30 9',
@@ -279,7 +290,7 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
             'sudo systemctl reload-or-restart "php$version-fpm" || true',
         );
 
-    $script = $ssh->commands[3]->input ?? '';
+    $script = $ssh->commands[5]->input ?? '';
     $lock = mb_strpos(haystack: $script, needle: 'flock -w 30 9');
     $snapshot = mb_strpos(haystack: $script, needle: 'for pool in "$pool_directory"/*.conf');
     $validation = mb_strpos(
@@ -308,6 +319,49 @@ it('validates aggregate FPM candidates and restores the managed pool after activ
         ->and($activation)
         ->toBeInt()
         ->toBeLessThan($rollback);
+});
+
+it('keeps AppProd package-source and install failures stable', function (): void {
+    [$node] = app_prod_runtime_models();
+    $sourceFailureSsh = new AppDevFakeSshExecutor([
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, "8.5\n", '', 1, false),
+        new CommandResult(0, "8.5\n", '', 1, false),
+        new CommandResult(1, '', 'source unavailable', 1, false),
+    ]);
+    $sourceFailureManager = new RemoteAppProdPhpFpmManager(
+        sites: new AppProdSiteRepository,
+        renderer: new AppProdPhpFpmConfigRenderer,
+        ssh: app_prod_ssh($sourceFailureSsh),
+    );
+
+    expect(fn () => $sourceFailureManager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->step)
+                ->toBe('app-prod-php-package-source')
+                ->and($exception->errorCode)
+                ->toBe('app-prod.php_package_source_unavailable');
+        });
+
+    $installFailureSsh = new AppDevFakeSshExecutor([
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(0, "8.5\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
+        new CommandResult(1, '', 'install failed', 1, false),
+    ]);
+    $installFailureManager = new RemoteAppProdPhpFpmManager(
+        sites: new AppProdSiteRepository,
+        renderer: new AppProdPhpFpmConfigRenderer,
+        ssh: app_prod_ssh($installFailureSsh),
+    );
+
+    expect(fn () => $installFailureManager->converge($node))
+        ->toThrow(function (RuntimeConvergenceException $exception): void {
+            expect($exception->step)
+                ->toBe('app-prod-php-fpm-install')
+                ->and($exception->errorCode)
+                ->toBe('app-prod.php_install_failed');
+        });
 });
 
 it('restores the exact AppProd FPM file before the recovery reload when activation fails', function (): void {

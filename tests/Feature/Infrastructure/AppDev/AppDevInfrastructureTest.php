@@ -988,6 +988,8 @@ it('installs selected PHP versions and validates a complete staged FPM configura
     [$node] = app_dev_runtime_models(instancePhp: '8.4');
     $ssh = new AppDevFakeSshExecutor([
         new CommandResult(0, "8.5\n", '', 1, false),
+        new CommandResult(0, "8.4\n", '', 1, false),
+        new CommandResult(0, '', '', 1, false),
     ]);
     $manager = new RemoteAppDevPhpFpmManager(
         sites: new AppDevSiteRepository,
@@ -1002,9 +1004,9 @@ it('installs selected PHP versions and validates a complete staged FPM configura
         ->values();
 
     expect($ssh->commands)
-        ->toHaveCount(4)
-        ->and($ssh->commands[1]->input)
-        ->toContain('apt-get install', '"php$version-fpm"')
+        ->toHaveCount(6)
+        ->and($ssh->commands[3]->input)
+        ->toContain('apt-get -o DPkg::Lock::Timeout=300 install', '"php$version-fpm"')
         ->and($publishCalls)
         ->toHaveCount(2)
         ->and($publishCalls->first()?->input)

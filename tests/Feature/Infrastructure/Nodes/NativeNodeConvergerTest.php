@@ -125,6 +125,13 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
 
     $converger->converge($node, 'SHA256:pinned');
 
+    $bootstrapArguments = $ssh->calls[0]['command']->arguments;
+    $bootstrapPackages = array_slice(array: $bootstrapArguments, offset: 5);
+    $phpPackages = array_values(array_filter(
+        array: $bootstrapPackages,
+        callback: static fn (string $package): bool => str_starts_with($package, 'php'),
+    ));
+
     expect($node->refresh()->ssh_user)
         ->toBe('orbit')
         ->and($node->ssh_host_fingerprint)
@@ -148,7 +155,7 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
             '1',
             'ca-certificates',
         ])
-        ->and($ssh->calls[0]['command']->arguments)
+        ->and($bootstrapArguments)
         ->toContain(
             'acl',
             'attr',
@@ -156,14 +163,10 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
             'composer',
             'docker.io',
             'openssl',
-            'php8.5-curl',
-            'php8.5-fpm',
-            'php8.5-intl',
-            'php8.5-mbstring',
-            'php8.5-xml',
-            'php8.5-zip',
             'unzip',
         )
+        ->and($phpPackages)
+        ->toBeEmpty()
         ->and($ssh->calls[0]['command']->input)
         ->toContain(
             'app_dev=$2',
