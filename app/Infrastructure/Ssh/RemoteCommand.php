@@ -6,13 +6,16 @@ namespace App\Infrastructure\Ssh;
 
 use App\Infrastructure\Processes\ProtectedInput;
 use InvalidArgumentException;
+use SensitiveParameter;
 
 final readonly class RemoteCommand
 {
     /** @param non-empty-list<string> $arguments */
     public function __construct(
         public array $arguments,
+        #[SensitiveParameter]
         public ?string $input = null,
+        #[SensitiveParameter]
         public ?ProtectedInput $protectedInput = null,
     ) {
         if ($arguments === []) {

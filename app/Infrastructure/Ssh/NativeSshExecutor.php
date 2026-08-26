@@ -7,6 +7,7 @@ namespace App\Infrastructure\Ssh;
 use App\Infrastructure\Processes\CommandResult;
 use App\Infrastructure\Processes\ProcessInvocation;
 use App\Infrastructure\Processes\ProcessRunner;
+use SensitiveParameter;
 
 final readonly class NativeSshExecutor implements SshExecutor
 {
@@ -14,7 +15,7 @@ final readonly class NativeSshExecutor implements SshExecutor
         private ProcessRunner $runner,
     ) {}
 
-    public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+    public function execute(SshConnection $connection, #[SensitiveParameter] RemoteCommand $command): CommandResult
     {
         return $this->runner->run(new ProcessInvocation(
             arguments: [

@@ -6,15 +6,19 @@ namespace App\Http\Requests\Processes;
 
 use App\Data\Processes\AddProcessData;
 use App\Domain\Processes\ProcessRuntime;
+use App\Domain\Processes\ProcessRuntimeSelector;
+use App\Domain\Processes\ProcessTargetResolver;
 use App\Domain\Processes\ProcessTargetType;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Validator;
 use SensitiveParameter;
 
 /**
- * @mago-expect lint:cyclomatic-complexity One request validates both explicit supported runtime shapes.
+ * @mago-expect lint:cyclomatic-complexity One request validates supported Linux and Darwin runtime shapes.
  * @mago-expect lint:kan-defect Runtime-specific validation stays at the HTTP boundary.
+ * @mago-expect lint:too-many-methods The request keeps one raw-input validation boundary for process creation.
  */
 final class StoreProcessRequest extends FormRequest
 {
@@ -30,12 +34,11 @@ final class StoreProcessRequest extends FormRequest
                 'max:63',
                 'regex:/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/D',
             ],
-            'runtime' => ['required', Rule::enum(ProcessRuntime::class)],
+            'runtime' => ['sometimes', 'string'],
             'command' => ['required', 'array', 'min:1', 'max:64'],
             'command.*' => ['string', 'max:4096', 'not_regex:/[\x00\r\n]/'],
             'image' => [
-                'required_if:runtime,docker',
-                'prohibited_unless:runtime,docker',
+                'sometimes',
                 'nullable',
                 'string',
                 'max:255',
@@ -48,14 +51,14 @@ final class StoreProcessRequest extends FormRequest
                 'max:4096',
                 'regex:/\A\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\x00\r\n]*\z/D',
             ],
-            'environment' => ['sometimes', 'prohibited_unless:runtime,docker', 'array', 'max:100'],
-            'environment.*' => ['string', 'max:4096', 'not_regex:/[\x00\r\n]/'],
-            'ports' => ['sometimes', 'prohibited_unless:runtime,docker', 'array', 'max:100'],
+            'environment' => ['sometimes', 'array', 'max:100'],
+            'environment.*' => ['string', 'max:4096'],
+            'ports' => ['sometimes', 'array', 'max:100'],
             'ports.*' => [
                 'string',
                 'regex:/\A(?:(?:\d{1,3}\.){3}\d{1,3}:)?\d{1,5}:\d{1,5}(?:\/(?:tcp|udp))?\z/D',
             ],
-            'volumes' => ['sometimes', 'prohibited_unless:runtime,docker', 'array', 'max:100'],
+            'volumes' => ['sometimes', 'array', 'max:100'],
             'volumes.*' => ['array:source,target,read_only'],
             'volumes.*.source' => [
                 'required',
@@ -83,8 +86,23 @@ final class StoreProcessRequest extends FormRequest
     {
         return [
             function (#[SensitiveParameter] Validator $validator): void {
+                $this->validateRuntimeValue($validator);
+
+                if ($validator->errors()->has('runtime')) {
+                    return;
+                }
+
+                if (
+                    $validator->errors()->has('target_type')
+                    || $validator->errors()->has('target_id')
+                ) {
+                    return;
+                }
+
+                $this->validateRuntimeSpecificFields($validator);
                 $this->validateSystemdExecutable($validator);
                 $this->validateEnvironmentNames($validator);
+                $this->validateEnvironmentValues($validator);
                 $this->validatePorts($validator);
             },
         ];
@@ -106,7 +124,7 @@ final class StoreProcessRequest extends FormRequest
             targetType: ProcessTargetType::from((string) $validated['target_type']),
             targetId: (int) $validated['target_id'],
             name: (string) $validated['name'],
-            runtime: ProcessRuntime::from((string) $validated['runtime']),
+            runtime: $this->resolvedRuntime(),
             command: array_values($command),
             image: is_string($validated['image'] ?? null) ? $validated['image'] : null,
             workingDirectory: is_string($validated['working_directory'] ?? null)
@@ -123,9 +141,74 @@ final class StoreProcessRequest extends FormRequest
     }
 
     /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
+    private function validateRuntimeValue(#[SensitiveParameter] Validator $validator): void
+    {
+        if (! $this->exists('runtime')) {
+            return;
+        }
+
+        $runtime = $this->runtimeInput();
+
+        if (! is_string($runtime)) {
+            $validator->errors()->add('runtime', 'The runtime field must be a string.');
+
+            return;
+        }
+
+        if (
+            strlen($runtime) > 64
+            || preg_match('//u', $runtime) !== 1
+            || preg_match('/\p{Cc}/u', $runtime) === 1
+        ) {
+            $validator->errors()->add('runtime', 'The runtime field format is invalid.');
+        }
+    }
+
+    private function validateRuntimeSpecificFields(#[SensitiveParameter] Validator $validator): void
+    {
+        try {
+            $runtime = $this->resolvedRuntime();
+        } catch (\Throwable) {
+            return;
+        }
+
+        if (! $runtime instanceof ProcessRuntime) {
+            return;
+        }
+
+        if (
+            $runtime === ProcessRuntime::Docker
+            && (! $this->exists('image')
+            || ! is_string($this->input('image'))
+            || $this->input('image') === '')
+        ) {
+            $validator->errors()->add('image', 'The image field is required when runtime is docker.');
+        }
+
+        if ($runtime === ProcessRuntime::Systemd && $this->exists('environment')) {
+            $validator->errors()->add('environment', 'The environment field is prohibited when runtime is systemd.');
+        }
+
+        if ($runtime === ProcessRuntime::Docker) {
+            return;
+        }
+
+        foreach (['image', 'ports', 'volumes'] as $field) {
+            if (! $this->exists($field)) {
+                continue;
+            }
+
+            $validator->errors()->add(
+                $field,
+                "The {$field} field is prohibited when runtime is {$runtime->value}.",
+            );
+        }
+    }
+
+    /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
     private function validateSystemdExecutable(#[SensitiveParameter] Validator $validator): void
     {
-        if ($this->input('runtime') !== ProcessRuntime::Systemd->value) {
+        if ($this->resolvedRuntime()?->value !== ProcessRuntime::Systemd->value) {
             return;
         }
 
@@ -160,13 +243,44 @@ final class StoreProcessRequest extends FormRequest
                 $validator->errors()->forget($field);
             }
 
-            $validator->errors()->add(
-                'environment',
-                'The environment contains an invalid variable name.',
-            );
+            $validator->errors()->add('environment', 'The environment contains an invalid variable name.');
 
             return;
         }
+    }
+
+    /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
+    private function validateEnvironmentValues(#[SensitiveParameter] Validator $validator): void
+    {
+        $environment = $this->input('environment');
+
+        if (! is_array($environment)) {
+            return;
+        }
+
+        foreach ($environment as $name => $value) {
+            if (! is_string($name) || preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/D', $name) !== 1) {
+                return;
+            }
+
+            if (! is_string($value) || ! $this->isXmlSafeEnvironmentValue($value)) {
+                $validator->errors()->add("environment.{$name}", 'The environment contains an invalid value.');
+
+                return;
+            }
+        }
+    }
+
+    private function isXmlSafeEnvironmentValue(string $value): bool
+    {
+        return (
+            preg_match('//u', $value) === 1
+            && preg_match('/\p{Cc}/u', $value) !== 1
+            && preg_match(
+                '/\A(?:[\x{20}-\x{D7FF}]|[\x{E000}-\x{FFFD}]|[\x{10000}-\x{10FFFF}])*\z/uD',
+                $value,
+            ) === 1
+        );
     }
 
     /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
@@ -199,6 +313,66 @@ final class StoreProcessRequest extends FormRequest
 
             $validator->errors()->add("ports.{$index}", 'Published ports must be between 1 and 65535.');
         }
+    }
+
+    /** @mago-expect analysis:mixed-assignment Request input remains mixed until the runtime boundary checks it. */
+    private function resolvedRuntime(): ?ProcessRuntime
+    {
+        $runtime = $this->runtimeInput();
+
+        if (! $this->exists('runtime')) {
+            return app(ProcessRuntimeSelector::class)->select(null, $this->target()->node->platform);
+        }
+
+        if (! is_string($runtime)) {
+            return null;
+        }
+
+        if ($runtime === '') {
+            throw ValidationException::withMessages([
+                'runtime' => ['The selected runtime is invalid.'],
+            ]);
+        }
+
+        $selected = ProcessRuntime::tryFrom($runtime);
+
+        if ($selected === null) {
+            throw ValidationException::withMessages([
+                'runtime' => ['The selected runtime is invalid.'],
+            ]);
+        }
+
+        return app(ProcessRuntimeSelector::class)->select($selected, $this->target()->node->platform);
+    }
+
+    /** @mago-expect analysis:mixed-assignment Decoded JSON remains mixed until the caller validates it. */
+    private function runtimeInput(): mixed
+    {
+        $content = $this->getContent();
+
+        if ($content === '') {
+            return $this->input('runtime');
+        }
+
+        try {
+            $payload = json_decode($content, associative: true, flags: JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return $this->input('runtime');
+        }
+
+        if (! is_array($payload) || ! array_key_exists('runtime', $payload)) {
+            return $this->input('runtime');
+        }
+
+        return $payload['runtime'];
+    }
+
+    private function target(): \App\Domain\Processes\ProcessTarget
+    {
+        return app(ProcessTargetResolver::class)->resolve(
+            ProcessTargetType::from((string) $this->input('target_type')),
+            (int) $this->input('target_id'),
+        );
     }
 
     /**

@@ -11,6 +11,7 @@ use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
 use App\Models\Process;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Monolog\Formatter\LineFormatter;
@@ -287,6 +288,164 @@ it('validates runtime-specific fixed argv and Docker input', function (array $pa
         ],
         'volumes.0.source',
     ],
+]);
+
+it('defaults an omitted Darwin app-dev runtime to launchd', function (): void {
+    $this->node->update([
+        'platform' => 'darwin',
+        'ssh_user' => 'nckrtl',
+    ]);
+
+    $response = $this->postJson('/api/v1/processes', [
+        'target_type' => 'instance',
+        'target_id' => $this->instance->id,
+        'name' => 'queue',
+        'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
+        'restart_policy' => 'always',
+        'start' => true,
+    ]);
+
+    $response
+        ->assertCreated()
+        ->assertJsonPath('data.runtime', 'launchd')
+        ->assertJsonPath('data.working_directory', '/Users/nckrtl/apps/docs');
+
+    expect(Process::query()->sole()->runtime->value)->toBe('launchd');
+});
+
+it('returns a stable error when Darwin Docker is requested', function (): void {
+    $this->node->update([
+        'platform' => 'darwin',
+        'ssh_user' => 'nckrtl',
+    ]);
+
+    $this
+        ->postJson('/api/v1/processes', [
+            'target_type' => 'instance',
+            'target_id' => $this->instance->id,
+            'name' => 'worker',
+            'runtime' => 'docker',
+            'image' => 'php:8.5-cli',
+            'command' => ['php', 'artisan', 'queue:work'],
+        ])
+        ->assertStatus(502)
+        ->assertJsonPath('error.code', 'process.runtime_unavailable');
+});
+
+it('rejects an invalid present runtime before target database selection', function (string $runtime): void {
+    $instanceQueries = [];
+    DB::listen(static function ($query) use (&$instanceQueries): void {
+        if (str_contains($query->sql, 'from "instances"')) {
+            $instanceQueries[] = $query->sql;
+        }
+    });
+
+    $response = $this->postJson('/api/v1/processes', [
+        'target_type' => 'instance',
+        'target_id' => $this->instance->id,
+        'name' => 'queue',
+        'runtime' => $runtime,
+        'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
+    ]);
+
+    $response
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed')
+        ->assertJsonPath('error.details.runtime.0', 'The runtime field format is invalid.');
+
+    expect($instanceQueries)->toBeEmpty();
+})->with([
+    'more than 64 bytes' => str_repeat('d', times: 65),
+    'control byte' => "launchd\x1B",
+    'C1 control' => "launchd\u{0085}",
+]);
+
+it('prohibits Docker-only fields for every non-Docker runtime', function (
+    string $platform,
+    string $runtime,
+    string $field,
+    mixed $value,
+): void {
+    if ($platform === 'darwin') {
+        $this->node->update([
+            'platform' => 'darwin',
+            'ssh_user' => 'nckrtl',
+        ]);
+    }
+
+    $this
+        ->postJson('/api/v1/processes', [
+            'target_type' => 'instance',
+            'target_id' => $this->instance->id,
+            'name' => 'queue',
+            'runtime' => $runtime,
+            'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
+            $field => $value,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed')
+        ->assertJsonPath(
+            "error.details.{$field}.0",
+            "The {$field} field is prohibited when runtime is {$runtime}.",
+        );
+})->with([
+    'systemd image' => ['linux', 'systemd', 'image', 'busybox:1'],
+    'launchd image' => ['darwin', 'launchd', 'image', 'busybox:1'],
+    'launchd ports' => ['darwin', 'launchd', 'ports', ['127.0.0.1:8080:80/tcp']],
+    'launchd volumes' => [
+        'darwin',
+        'launchd',
+        'volumes',
+        [['source' => 'data', 'target' => '/data', 'read_only' => false]],
+    ],
+]);
+
+it('does not resolve a process target after base target validation fails', function (): void {
+    $instanceQueries = [];
+    DB::listen(static function ($query) use (&$instanceQueries): void {
+        if (str_contains($query->sql, 'from "instances"')) {
+            $instanceQueries[] = $query->sql;
+        }
+    });
+
+    $response = $this->postJson('/api/v1/processes', [
+        'target_type' => 'invalid-target',
+        'target_id' => $this->instance->id,
+        'name' => 'queue',
+        'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
+    ]);
+
+    $response
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed')
+        ->assertJsonPath('error.details.target_type.0', 'The selected target type is invalid.');
+
+    expect($instanceQueries)->toBeEmpty();
+});
+
+it('rejects XML-invalid and control environment values without exposing them', function (string $value): void {
+    $response = $this->postJson('/api/v1/processes', [
+        'target_type' => 'instance',
+        'target_id' => $this->instance->id,
+        'name' => 'worker',
+        'runtime' => 'docker',
+        'image' => 'busybox:1',
+        'command' => ['env'],
+        'environment' => ['XML_VALUE' => $value],
+    ]);
+
+    $response
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed');
+
+    expect($response->json('error.details'))
+        ->toHaveKey('environment.XML_VALUE', ['The environment contains an invalid value.'])
+        ->and($response->getContent())
+        ->not->toContain($value);
+})->with([
+    'C1 control' => "before\u{0085}after",
+    'XML noncharacter FFFE' => "before\u{FFFE}after",
+    'XML noncharacter FFFF' => "before\u{FFFF}after",
 ]);
 
 it('keeps invalid Docker environment names out of validation and activity diagnostics', function (): void {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Processes;
 
+use App\Domain\AppDev\AppDevHostPaths;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
@@ -14,6 +15,10 @@ use SensitiveParameter;
 
 final readonly class ProcessTargetResolver
 {
+    public function __construct(
+        private AppDevHostPaths $paths = new AppDevHostPaths,
+    ) {}
+
     public function resolve(ProcessTargetType $type, int $id): ProcessTarget
     {
         return match ($type) {
@@ -41,6 +46,20 @@ final readonly class ProcessTargetResolver
     private function instance(Instance $instance): ProcessTarget
     {
         $this->ensureActive($instance);
+
+        if ($instance->node->platform === 'darwin') {
+            return new ProcessTarget(
+                node: $instance->node,
+                user: $instance->node->ssh_user,
+                checkoutPath: $this->paths->instanceCheckout(
+                    $instance->node,
+                    RoleName::AppDev,
+                    $instance->app->slug,
+                    $instance->name,
+                ),
+            );
+        }
+
         $user = $this->hasActiveAppProdRole($instance)
             ? "orbit-{$instance->app->slug}"
             : 'orbit';
@@ -70,6 +89,18 @@ final readonly class ProcessTargetResolver
             );
         }
 
+        if ($workspace->instance->node->platform === 'darwin') {
+            return new ProcessTarget(
+                node: $workspace->instance->node,
+                user: $workspace->instance->node->ssh_user,
+                checkoutPath: $this->paths->workspaceCheckout(
+                    $workspace->instance->node,
+                    $workspace->instance->app->slug,
+                    $workspace->name,
+                ),
+            );
+        }
+
         return new ProcessTarget(
             node: $workspace->instance->node,
             user: 'orbit',
@@ -79,7 +110,10 @@ final readonly class ProcessTargetResolver
 
     private function ensureActive(Instance $instance): void
     {
-        if ($instance->node->platform !== 'linux') {
+        if (
+            ! in_array($instance->node->platform, ['linux', 'darwin'], strict: true)
+            || ! $this->hasSupportedRole($instance)
+        ) {
             throw new ResourceOperationException(
                 errorCode: 'process.platform_unsupported',
                 message: "Processes are not supported on [{$instance->node->platform}] nodes yet.",
@@ -104,6 +138,33 @@ final readonly class ProcessTargetResolver
             ->contains(
                 static fn ($role): bool => (
                     $role->role === RoleName::AppProd
+                    && $role->status === LifecycleStatus::Active
+                ),
+            );
+    }
+
+    private function hasSupportedRole(Instance $instance): bool
+    {
+        if ($instance->node->platform === 'darwin') {
+            $this->paths->home($instance->node, RoleName::AppDev);
+
+            return $instance
+                ->node
+                ->roles
+                ->contains(
+                    static fn ($role): bool => (
+                        $role->role === RoleName::AppDev
+                        && $role->status === LifecycleStatus::Active
+                    ),
+                );
+        }
+
+        return $instance
+            ->node
+            ->roles
+            ->contains(
+                static fn ($role): bool => (
+                    in_array($role->role, [RoleName::AppDev, RoleName::AppProd], strict: true)
                     && $role->status === LifecycleStatus::Active
                 ),
             );
