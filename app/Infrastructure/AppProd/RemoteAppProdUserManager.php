@@ -89,6 +89,7 @@ final readonly class RemoteAppProdUserManager implements AppProdUserManager
                     fi
                     test -z "$(find -P "$app_root" -xdev -mindepth 1 ! -user "$user" -print -quit)"
                     test -z "$(find -P "$app_root" -xdev -mindepth 1 ! -group "$user" -print -quit)"
+                    cd /
                     sudo -u "$user" -H -- find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
                     test -z "$(find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -print -quit)"
                     userdel -- "$user"

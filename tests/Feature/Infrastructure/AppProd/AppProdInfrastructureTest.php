@@ -158,6 +158,7 @@ it('cleans only isolated app-owned home entries before deleting the production u
         haystack: $cleanup,
         needle: 'test -z "$(pgrep -u "$user" || true)"',
     );
+    $safeWorkingDirectory = mb_strpos(haystack: $cleanup, needle: 'cd /');
     $homeCleanup = mb_strpos(
         haystack: $cleanup,
         needle: 'sudo -u "$user" -H -- find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
@@ -180,6 +181,9 @@ it('cleans only isolated app-owned home entries before deleting the production u
         ->not
         ->toContain('userdel -r', 'rm -rf -- "$app_root"')
         ->and($processGuard)
+        ->toBeInt()
+        ->toBeLessThan($safeWorkingDirectory)
+        ->and($safeWorkingDirectory)
         ->toBeInt()
         ->toBeLessThan($homeCleanup)
         ->and($homeCleanup)
