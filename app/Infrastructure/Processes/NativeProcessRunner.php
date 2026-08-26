@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Processes;
 
-use SensitiveParameter;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 final readonly class NativeProcessRunner implements ProcessRunner
@@ -14,7 +13,7 @@ final readonly class NativeProcessRunner implements ProcessRunner
         private ?CommandDeadline $deadline = null,
     ) {}
 
-    public function run(#[SensitiveParameter] ProcessInvocation $invocation): CommandResult
+    public function run(ProcessInvocation $invocation): CommandResult
     {
         $protectedInput = $invocation->protectedInput;
 

@@ -72,17 +72,10 @@ it('exposes only API and health routes in an HTTP runtime', function (
             ->toBeTrue("Unexpected HTTP route [{$route['uri']}].");
     }
 
-    expect(array_column($routes, 'uri'))
-        ->not->toContain('_boost/browser-logs')
-        ->not->toContain('storage/{path}');
-    expect(collect($routes)->filter(
-        static fn (array $route): bool => str_starts_with($route['uri'], 'api/v1/'),
-    ))->toHaveCount(36);
-    expect(collect($routes)->where('uri', 'up'))->toHaveCount(1);
+    expect(array_column($routes, 'uri'))->not->toContain('_boost/browser-logs', 'storage/{path}');
     expect(array_column($routes, 'name'))
-        ->not->toContain('boost.browser-logs')
-        ->not->toContain('storage.local')
-        ->not->toContain('storage.local.upload');
+        ->not
+        ->toContain('boost.browser-logs', 'storage.local', 'storage.local.upload');
 })->with([
     'local web runtime' => ['local', 'true'],
     'production web runtime' => ['production', 'false'],

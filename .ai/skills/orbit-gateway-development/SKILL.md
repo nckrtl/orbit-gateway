@@ -27,7 +27,7 @@ business logic and performs explicit infrastructure actions over SSH.
   an Agent, a hidden executor, generic scripts, or unattended macOS elevation.
 - Keep Linux privilege escalation behind narrow remote commands. Keep Darwin
   privilege-sensitive actions in the local macOS adapter.
-- Before designing infrastructure behavior, search `/home/nckrtl/orbit/orbit` for its
+- Before designing infrastructure behavior, search `~/orbit-old` for its
   implementation and tests. Port compatible invariants, not retired topology.
 
 ## Required skills

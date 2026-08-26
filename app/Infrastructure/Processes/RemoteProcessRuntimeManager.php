@@ -60,7 +60,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
             match ($process->runtime) {
                 ProcessRuntime::Systemd => $this->convergeAndActivateSystemd($process, $target),
                 ProcessRuntime::Docker => $this->convergeDocker($process, $target),
-                ProcessRuntime::Launchd => $this->unsupportedRuntime(),
             };
         });
     }
@@ -112,7 +111,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
                 'start',
                 $this->docker->containerName($process),
             ],
-            ProcessRuntime::Launchd => $this->unsupportedRuntime(),
         };
 
         $this->executeSuccessfully($process, $arguments, 'start', 'process.start_failed');
@@ -137,7 +135,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
                 'stop',
                 $this->docker->containerName($process),
             ],
-            ProcessRuntime::Launchd => $this->unsupportedRuntime(),
         };
 
         $this->executeSuccessfully($process, $arguments, 'stop', 'process.stop_failed');
@@ -146,10 +143,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
     private function restartUnlocked(#[SensitiveParameter] Process $process): void
     {
         $this->requireOwnedRuntime($process, 'restart', 'process.restart_failed');
-
-        if ($process->runtime === ProcessRuntime::Launchd) {
-            $this->unsupportedRuntime();
-        }
 
         if ($process->runtime === ProcessRuntime::Docker) {
             $this->executeSuccessfully(
@@ -178,10 +171,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
 
     private function removeUnlocked(#[SensitiveParameter] Process $process): void
     {
-        if ($process->runtime === ProcessRuntime::Launchd) {
-            $this->unsupportedRuntime();
-        }
-
         if ($process->runtime === ProcessRuntime::Docker) {
             $this->removeDockerArtifacts($process);
 
@@ -270,7 +259,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
                 '{{.State.Status}}',
                 $this->docker->containerName($process),
             ],
-            ProcessRuntime::Launchd => $this->unsupportedRuntime(),
         };
         $result = $this->execute($process, $arguments);
         $status = trim($result->stdout);
@@ -322,7 +310,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
                 (string) $lines,
                 $this->docker->containerName($process),
             ],
-            ProcessRuntime::Launchd => $this->unsupportedRuntime(),
         };
 
         return $this->executeSuccessfully(
@@ -336,15 +323,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
     public function dockerSpecHash(#[SensitiveParameter] Process $process): string
     {
         return $this->docker->specHash($process, $this->targets->forProcess($process));
-    }
-
-    private function unsupportedRuntime(): never
-    {
-        throw new ProcessOperationException(
-            step: 'select-runtime',
-            errorCode: 'process.runtime_unsupported',
-            message: 'The selected runtime is not supported on this node platform.',
-        );
     }
 
     private function withRuntimeLock(#[SensitiveParameter] Process $process, Closure $operation): void
@@ -1193,7 +1171,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         return match ($process->runtime) {
             ProcessRuntime::Systemd => $this->systemdExistsAndIsOwned($process, $step, $errorCode),
             ProcessRuntime::Docker => $this->dockerExistsAndIsOwned($process, $step, $errorCode),
-            ProcessRuntime::Launchd => $this->unsupportedRuntime(),
         };
     }
 
@@ -1291,7 +1268,6 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         return match ($runtime) {
             ProcessRuntime::Systemd => $this->isSystemdNotFound($result),
             ProcessRuntime::Docker => $this->isDockerNotFound($result),
-            ProcessRuntime::Launchd => false,
         };
     }
 

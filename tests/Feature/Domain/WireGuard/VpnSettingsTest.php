@@ -19,8 +19,6 @@ it('returns typed VPN defaults when gateway settings are absent', function (): v
         ->toBeNull()
         ->and($settings->domain())
         ->toBe('orbit')
-        ->and($settings->configuredDomain())
-        ->toBeNull()
         ->and($settings->privateInterface())
         ->toBeNull();
 });
@@ -46,8 +44,6 @@ it('persists and reloads the complete typed VPN configuration', function (): voi
         ->and($settings->dnsServer())
         ->toBe('10.80.0.1')
         ->and($settings->domain())
-        ->toBe('private.example.test')
-        ->and($settings->configuredDomain())
         ->toBe('private.example.test')
         ->and($settings->privateInterface())
         ->toBe('eth3')

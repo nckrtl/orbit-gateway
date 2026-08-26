@@ -15,7 +15,6 @@ use App\Domain\Processes\DesiredProcessState;
 use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Processes\ProcessRuntime;
 use App\Domain\Processes\ProcessRuntimeManager;
-use App\Domain\Processes\ProcessRuntimeSelector;
 use App\Domain\Processes\ProcessTargetResolver;
 use App\Domain\Processes\ProcessTargetType;
 use App\Domain\Shared\LifecycleStatus;
@@ -31,7 +30,6 @@ beforeEach(function (): void {
     $this->runtime = new ProcessActionsFakeRuntimeManager;
     app()->instance(ProcessRuntimeManager::class, $this->runtime);
     $this->targets = new ProcessTargetResolver;
-    $this->selector = new ProcessRuntimeSelector;
 
     $this->node = Node::query()->create([
         'name' => 'app-dev',
@@ -90,7 +88,7 @@ it('adds a stopped systemd process idempotently with the target defaults', funct
         restartPolicy: 'on-failure',
         start: false,
     );
-    $action = new AddProcessAction($this->targets, $this->selector, $this->runtime);
+    $action = new AddProcessAction($this->targets, $this->runtime);
 
     $first = $action->execute($data);
     $second = $action->execute($data);
@@ -140,7 +138,7 @@ it('preserves the desired state when an existing process is added again', functi
         start: false,
     );
 
-    $result = new AddProcessAction($this->targets, $this->selector, $this->runtime)->execute($data);
+    $result = new AddProcessAction($this->targets, $this->runtime)->execute($data);
 
     expect($result['created'])
         ->toBeFalse()
@@ -151,7 +149,7 @@ it('preserves the desired state when an existing process is added again', functi
 });
 
 it('canonicalizes Docker environment maps before persistence and idempotency comparison', function (): void {
-    $action = new AddProcessAction($this->targets, $this->selector, $this->runtime);
+    $action = new AddProcessAction($this->targets, $this->runtime);
     $first = new AddProcessData(
         targetType: ProcessTargetType::Instance,
         targetId: $this->instance->id,
@@ -215,7 +213,7 @@ it('keeps Docker environment values out of action exception traces', function ()
     );
 
     try {
-        new AddProcessAction($this->targets, $this->selector, $this->runtime)->execute($data);
+        new AddProcessAction($this->targets, $this->runtime)->execute($data);
     } catch (ProcessOperationException $exception) {
         expect(json_encode($exception->getTrace(), JSON_THROW_ON_ERROR))->not->toContain($sensitiveValue);
 
@@ -241,7 +239,7 @@ it('adds and starts one Docker container process with explicit configuration', f
         start: true,
     );
 
-    $result = new AddProcessAction($this->targets, $this->selector, $this->runtime)->execute($data);
+    $result = new AddProcessAction($this->targets, $this->runtime)->execute($data);
     $process = $result['process'];
 
     expect($process->owner)
@@ -277,7 +275,7 @@ it('retains a failed desired-running process definition and clears recovery stat
         restartPolicy: 'unless-stopped',
         start: true,
     );
-    $action = new AddProcessAction($this->targets, $this->selector, $this->runtime);
+    $action = new AddProcessAction($this->targets, $this->runtime);
     $this->runtime->startFailure = new ProcessOperationException(
         step: 'start',
         errorCode: 'process.start_failed',
@@ -310,7 +308,7 @@ it('retains a failed desired-running process definition and clears recovery stat
 });
 
 it('rejects a conflicting process definition with the same owner and name', function (): void {
-    $action = new AddProcessAction($this->targets, $this->selector, $this->runtime);
+    $action = new AddProcessAction($this->targets, $this->runtime);
     $initial = new AddProcessData(
         targetType: ProcessTargetType::Instance,
         targetId: $this->instance->id,
@@ -373,7 +371,7 @@ it('rejects workspace process targets on app-prod nodes', function (): void {
 });
 
 it('rejects process targets on non-Linux nodes before runtime execution', function (): void {
-    $this->node->update(['platform' => 'freebsd']);
+    $this->node->update(['platform' => 'darwin']);
     $data = new AddProcessData(
         targetType: ProcessTargetType::Instance,
         targetId: $this->instance->id,
@@ -390,7 +388,7 @@ it('rejects process targets on non-Linux nodes before runtime execution', functi
     );
 
     try {
-        new AddProcessAction($this->targets, $this->selector, $this->runtime)->execute($data);
+        new AddProcessAction($this->targets, $this->runtime)->execute($data);
     } catch (ResourceOperationException $exception) {
         expect($exception->errorCode)
             ->toBe('process.platform_unsupported')
@@ -403,53 +401,6 @@ it('rejects process targets on non-Linux nodes before runtime execution', functi
     }
 
     $this->fail('Expected a non-Linux process target to be rejected.');
-});
-
-it('resolves Darwin app-dev process targets with the personal SSH user and managed path', function (): void {
-    $this->node->update([
-        'platform' => 'darwin',
-        'ssh_user' => 'nckrtl',
-    ]);
-
-    $target = $this->targets->resolve(ProcessTargetType::Instance, $this->instance->id);
-
-    expect($target->user)
-        ->toBe('nckrtl')
-        ->and($target->checkoutPath)
-        ->toBe('/Users/nckrtl/apps/docs');
-});
-
-it('defaults an omitted Darwin runtime to launchd in the add action', function (): void {
-    $this->node->update([
-        'platform' => 'darwin',
-        'ssh_user' => 'nckrtl',
-    ]);
-    $data = new AddProcessData(
-        targetType: ProcessTargetType::Instance,
-        targetId: $this->instance->id,
-        name: 'queue',
-        runtime: null,
-        command: ['/usr/bin/php', 'artisan', 'queue:work'],
-        image: null,
-        workingDirectory: null,
-        environment: ['APP_ENV' => 'local'],
-        ports: [],
-        volumes: [],
-        restartPolicy: 'always',
-        start: false,
-    );
-
-    $result = new AddProcessAction($this->targets, $this->selector, $this->runtime)->execute($data);
-
-    expect($result['process']->runtime)
-        ->toBe(ProcessRuntime::Launchd)
-        ->and($result['process']->working_directory)
-        ->toBe('/Users/nckrtl/apps/docs')
-        ->and($result['process']->runtime_config)
-        ->toBe([
-            'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
-            'environment' => ['APP_ENV' => 'local'],
-        ]);
 });
 
 it('runs idempotent lifecycle actions and returns bounded logs', function (): void {

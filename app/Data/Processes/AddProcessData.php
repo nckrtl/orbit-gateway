@@ -21,7 +21,7 @@ final readonly class AddProcessData
         public ProcessTargetType $targetType,
         public int $targetId,
         public string $name,
-        public ?ProcessRuntime $runtime,
+        public ProcessRuntime $runtime,
         public array $command,
         public ?string $image,
         public ?string $workingDirectory,

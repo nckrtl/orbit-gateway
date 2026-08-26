@@ -8,5 +8,4 @@ enum ProcessRuntime: string
 {
     case Systemd = 'systemd';
     case Docker = 'docker';
-    case Launchd = 'launchd';
 }

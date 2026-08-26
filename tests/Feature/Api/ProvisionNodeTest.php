@@ -6,7 +6,6 @@ use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Shared\LifecycleStatus;
-use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Infrastructure\Processes\CommandResult;
 use App\Infrastructure\Ssh\SshHostKeyScanException;
 use App\Models\Activity;
@@ -267,20 +266,6 @@ describe('POST /api/v1/nodes', function (): void {
             }
         };
         app()->instance(NodeConverger::class, $converger);
-        $peers = new class implements GatewayPeerProjectionManager {
-            public int $convergences = 0;
-
-            public function converge(Node $node): void
-            {
-                $this->convergences++;
-            }
-
-            public function remove(Node $node): void {}
-
-            public function restore(Node $node): void {}
-        };
-        app()->instance(GatewayPeerProjectionManager::class, $peers);
-        $publicKey = base64_encode(str_repeat(string: "\x01", times: 32));
 
         $this
             ->postJson('/api/v1/nodes', [
@@ -289,15 +274,12 @@ describe('POST /api/v1/nodes', function (): void {
                 'architecture' => 'arm64',
                 'tld' => 'mac.test',
                 'roles' => ['app-dev'],
-                'ssh_user' => 'nckrtl',
-                'wireguard_public_key' => $publicKey,
             ])
             ->assertCreated()
             ->assertJsonPath('data.status', 'provisioning')
             ->assertJsonPath('data.platform', 'darwin')
             ->assertJsonPath('data.architecture', 'arm64')
             ->assertJsonPath('data.tld', 'mac.test')
-            ->assertJsonPath('data.wireguard_public_key', $publicKey)
             ->assertJsonPath('data.public_ssh_host', '10.44.0.1')
             ->assertJsonPath('data.roles.0', 'app-dev');
 
@@ -305,53 +287,8 @@ describe('POST /api/v1/nodes', function (): void {
 
         expect($node->roles()->sole()->status)
             ->toBe(LifecycleStatus::Provisioning)
-            ->and($peers->convergences)
-            ->toBe(1)
             ->and($converger->calls)
             ->toBe(0);
-    });
-
-    it('accepts a canonical 64-byte personal Darwin SSH user', function (): void {
-        app()->instance(NodeConverger::class, new class implements NodeConverger {
-            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
-        });
-        app()->instance(GatewayPeerProjectionManager::class, new class implements GatewayPeerProjectionManager {
-            public function converge(Node $node): void {}
-
-            public function remove(Node $node): void {}
-
-            public function restore(Node $node): void {}
-        });
-        $sshUser = 'a'.str_repeat(string: 'b', times: 63);
-
-        $this
-            ->postJson('/api/v1/nodes', [
-                'name' => 'long-user-mac',
-                'platform' => 'darwin',
-                'architecture' => 'arm64',
-                'tld' => 'long-user.test',
-                'roles' => ['app-dev'],
-                'ssh_user' => $sshUser,
-                'wireguard_public_key' => base64_encode(str_repeat(string: "\x04", times: 32)),
-            ])
-            ->assertCreated()
-            ->assertJsonPath('data.ssh_user', $sshUser);
-    });
-
-    it('rejects Darwin enrollment without a canonical WireGuard public key before persistence', function (): void {
-        $this
-            ->postJson('/api/v1/nodes', [
-                'name' => 'mac-without-key',
-                'platform' => 'darwin',
-                'architecture' => 'arm64',
-                'tld' => 'missing-key.test',
-                'roles' => ['app-dev'],
-                'ssh_user' => 'nckrtl',
-            ])
-            ->assertUnprocessable()
-            ->assertJsonPath('error.code', 'node.wireguard_public_key_required');
-
-        expect(Node::query()->where('name', 'mac-without-key')->exists())->toBeFalse();
     });
 
     it('returns a stable error when Darwin architecture is missing', function (): void {
@@ -471,12 +408,16 @@ describe('POST /api/v1/nodes', function (): void {
         $node = Node::query()->where('name', 'mismatch-node')->sole();
 
         expect($response->getContent())
-            ->not->toContain($expectedFingerprint)
-            ->not->toContain($observedFingerprint)->and($converger->expectedFingerprint)->toBe(
-                $expectedFingerprint,
-            )->and($node->ssh_host_fingerprint)->toBeNull()->and($node->status)->toBe(LifecycleStatus::Failed)->and($node->error_code)->toBe(
-                'node.ssh_host_key_mismatch',
-            );
+            ->not
+            ->toContain($expectedFingerprint, $observedFingerprint)
+            ->and($converger->expectedFingerprint)
+            ->toBe($expectedFingerprint)
+            ->and($node->ssh_host_fingerprint)
+            ->toBeNull()
+            ->and($node->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($node->error_code)
+            ->toBe('node.ssh_host_key_mismatch');
     });
 
     it('persists a stable host key scan failure before first-contact SSH', function (): void {
@@ -521,22 +462,30 @@ describe('POST /api/v1/nodes', function (): void {
         $activity = Activity::query()->where('request_id', $requestId)->sole();
 
         expect($response->getContent())
-            ->not->toContain('ssh-keyscan could not connect to the target')
-            ->not->toContain(
-                'scan-secret',
-            )->and($node->status)->toBe(LifecycleStatus::Failed)->and($node->failed_step)->toBe(
-                'ssh-host-key',
-            )->and($node->error_code)->toBe(
-                'node.ssh_host_key_scan_failed',
-            )->and($role->status)->toBe(LifecycleStatus::Failed)->and($role->failed_step)->toBe(
-                'ssh-host-key',
-            )->and($role->error_code)->toBe('node.ssh_host_key_scan_failed')->and($activity->error_code)->toBe(
-                'node.ssh_host_key_scan_failed',
-            )->and($activity->exit_code)->toBe(255)->and($activity->properties?->get(
-                'stdout',
-            ))->toBeEmpty()->and($activity->properties?->get('stderr'))->toBe(
-                "ssh: connect failed\nAPP_KEY=[REDACTED]",
-            )->and($activity->properties?->get('output_truncated'))->toBeTrue();
+            ->not
+            ->toContain('ssh-keyscan could not connect to the target', 'scan-secret')
+            ->and($node->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($node->failed_step)
+            ->toBe('ssh-host-key')
+            ->and($node->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($role->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($role->failed_step)
+            ->toBe('ssh-host-key')
+            ->and($role->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($activity->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($activity->exit_code)
+            ->toBe(255)
+            ->and($activity->properties?->get('stdout'))
+            ->toBeEmpty()
+            ->and($activity->properties?->get('stderr'))
+            ->toBe("ssh: connect failed\nAPP_KEY=[REDACTED]")
+            ->and($activity->properties?->get('output_truncated'))
+            ->toBeTrue();
     });
 
     it('keeps empty-string normalization for other nullable node fields', function (): void {

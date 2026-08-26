@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\AppDev;
 
-use App\Domain\AppDev\AppDevHostPaths;
-use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Models\Instance;
 use App\Models\Node;
@@ -14,10 +12,6 @@ use Illuminate\Support\Collection;
 
 final readonly class AppDevSiteRepository
 {
-    public function __construct(
-        private AppDevHostPaths $hostPaths = new AppDevHostPaths,
-    ) {}
-
     /** @return Collection<int, AppDevSite> */
     public function forNode(Node $node): Collection
     {
@@ -28,10 +22,7 @@ final readonly class AppDevSiteRepository
     public function all(): Collection
     {
         $instances = Instance::query()
-            ->with(['node.roles', 'workspaces'])
-            ->whereHas('node.roles', static fn ($query) => $query
-                ->where('role', RoleName::AppDev->value)
-                ->where('status', LifecycleStatus::Active->value))
+            ->with(['node', 'workspaces'])
             ->whereIn('status', [LifecycleStatus::Provisioning->value, LifecycleStatus::Active->value])
             ->latest('id')
             ->get();
@@ -71,8 +62,6 @@ final readonly class AppDevSiteRepository
             documentRoot: $instance->document_root,
             phpVersion: $instance->php_version,
             hostname: $instance->hostname,
-            platform: $instance->node->platform,
-            home: $this->hostPaths->home($instance->node, RoleName::AppDev),
         );
     }
 
@@ -86,8 +75,6 @@ final readonly class AppDevSiteRepository
             documentRoot: $instance->document_root,
             phpVersion: $workspace->php_version ?? $instance->php_version,
             hostname: $workspace->hostname,
-            platform: $instance->node->platform,
-            home: $this->hostPaths->home($instance->node, RoleName::AppDev),
         );
     }
 }

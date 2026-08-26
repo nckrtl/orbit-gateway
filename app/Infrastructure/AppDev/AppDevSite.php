@@ -15,8 +15,6 @@ final readonly class AppDevSite
         public string $documentRoot,
         public string $phpVersion,
         public string $hostname,
-        public string $platform = 'linux',
-        public string $home = '/home/orbit',
     ) {}
 
     public function poolName(): string
@@ -26,19 +24,11 @@ final readonly class AppDevSite
 
     public function socketPath(): string
     {
-        if ($this->platform === 'darwin') {
-            return "{$this->home}/.orbit/run/php/{$this->poolName()}.sock";
-        }
-
         return "/run/php/{$this->poolName()}.sock";
     }
 
     public function certificateDirectory(): string
     {
-        if ($this->platform === 'darwin') {
-            return "{$this->home}/.orbit/certificates/{$this->scope}/current";
-        }
-
         return "/etc/caddy/orbit-certificates/{$this->scope}/current";
     }
 }

@@ -114,37 +114,6 @@ describe('workspace API', function (): void {
             ->toBe($this->node->id);
     });
 
-    it('uses only the exact Darwin managed worktree root', function (): void {
-        $this->node->update([
-            'name' => 'mini',
-            'platform' => 'darwin',
-            'architecture' => 'arm64',
-            'ssh_user' => 'nckrtl',
-            'tld' => 'mini.orbit',
-        ]);
-        $this->instance->update([
-            'checkout_path' => '/Users/nckrtl/apps/acme',
-            'hostname' => 'acme.mini.orbit',
-        ]);
-
-        $this
-            ->postJson('/api/v1/workspaces', [
-                'instance_id' => $this->instance->id,
-                'name' => 'feature-one',
-            ])
-            ->assertCreated()
-            ->assertJsonPath('data.checkout_path', '/Users/nckrtl/.orbit/worktrees/acme/feature-one');
-
-        $this
-            ->postJson('/api/v1/workspaces', [
-                'instance_id' => $this->instance->id,
-                'name' => 'feature-two',
-                'checkout_path' => '/Users/nckrtl/custom-worktrees/feature-two',
-            ])
-            ->assertUnprocessable()
-            ->assertJsonPath('error.code', 'workspace.path_unsupported');
-    });
-
     it('rejects workspaces on an active app-prod node with a stable error', function (): void {
         $this->node->roles()->delete();
         $this->node

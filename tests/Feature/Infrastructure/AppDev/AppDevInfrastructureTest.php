@@ -2,15 +2,6 @@
 
 declare(strict_types=1);
 
-it('resolves the platform runtime and keeps Linux node convergence on the concrete Linux Caddy manager', function (): void {
-    expect(app(\App\Domain\AppDev\AppDevRuntimeConverger::class))
-        ->toBeInstanceOf(\App\Infrastructure\AppDev\PlatformAppDevRuntimeConverger::class)
-        ->and(app(\App\Domain\Nodes\NodeConverger::class))
-        ->toBeInstanceOf(\App\Infrastructure\Nodes\NativeNodeConverger::class)
-        ->and(app()->bound(\App\Domain\AppDev\AppDevCaddyManager::class))
-        ->toBeFalse();
-});
-
 use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Certificates\LeafCertificateSigner;
@@ -75,12 +66,10 @@ it('renders isolated pools and private Caddy listeners for every active scope', 
             'php_fastcgi unix//run/php/orbit-instance-1.sock',
             'tls /etc/caddy/orbit-certificates/instance-1/current/cert.pem',
         )
-        ->not->toContain('0.0.0.0')
-        ->not->toContain(':80')->and($adapted->succeeded())->toBeTrue()->and($adapted->stdout)->toContain(
+        ->not->toContain('0.0.0.0', ':80')->and($adapted->succeeded())->toBeTrue()->and($adapted->stdout)->toContain(
             '10.44.0.3:443',
         )
-        ->not->toContain('0.0.0.0:443')
-        ->not->toContain('127.0.0.1:443');
+        ->not->toContain('0.0.0.0:443', '127.0.0.1:443');
 });
 
 it('uses only generated instance paths and registered Git worktrees for source removal', function (): void {
@@ -1316,8 +1305,10 @@ it('projects only the explicit provisioning node before its active transition', 
         ->toContain(base64_encode(
             "# Managed by Orbit.\naddress=/.pending.orbit/10.44.0.30\nlocal=/pending.orbit/\n",
         ))
-        ->not->toContain(base64_encode('address=/.other-pending.orbit/10.44.0.31'))
-        ->not->toContain('other-pending.orbit');
+        ->not->toContain(
+            base64_encode('address=/.other-pending.orbit/10.44.0.31'),
+            'other-pending.orbit',
+        );
 });
 
 it('holds the shared projection lock while capturing and publishing DNS intent', function (): void {
@@ -1563,7 +1554,6 @@ function app_dev_runtime_models(string $instancePhp = '8.5'): array
         'wireguard_address' => '10.44.0.3',
         'ssh_user' => 'orbit',
     ]);
-    $node->roles()->create(['role' => RoleName::AppDev, 'status' => LifecycleStatus::Active]);
     $app = OrbitApp::query()->create([
         'name' => 'Acme',
         'slug' => 'acme',

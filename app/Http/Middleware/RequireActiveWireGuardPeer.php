@@ -5,25 +5,20 @@ declare(strict_types=1);
 namespace App\Http\Middleware;
 
 use App\Domain\Shared\LifecycleStatus;
-use App\Infrastructure\WireGuard\WireGuardPeerAddressResolver;
 use App\Models\Node;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-final readonly class RequireActiveWireGuardPeer
+final class RequireActiveWireGuardPeer
 {
-    public function __construct(
-        private WireGuardPeerAddressResolver $addresses,
-    ) {}
-
     /** @param Closure(Request): Response $next */
     public function handle(Request $request, Closure $next): Response
     {
-        $remoteAddress = $this->addresses->resolve($request);
+        $remoteAddress = $request->server('REMOTE_ADDR');
 
-        if ($remoteAddress === null) {
+        if (! is_string($remoteAddress) || filter_var($remoteAddress, FILTER_VALIDATE_IP) === false) {
             $request->attributes->set('orbit.error_code', 'peer.identity_unknown');
 
             return $this->forbidden();

@@ -6,7 +6,6 @@ namespace App\Actions\Nodes;
 
 use App\Data\Nodes\RemoveNodeData;
 use App\Domain\AppDev\PrivateDnsManager;
-use App\Domain\Nodes\NodeProjectionOperationLock;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\NodeRemovalException;
 use App\Domain\Nodes\RoleName;
@@ -22,20 +21,10 @@ final readonly class RemoveNodeAction
     public function __construct(
         private PrivateDnsManager $dns,
         private GatewayPeerProjectionManager $peers,
-        private NodeProjectionOperationLock $projectionLock,
     ) {}
 
     public function execute(Node $node, Node $caller): RemoveNodeData
     {
-        return $this->projectionLock->synchronized(
-            fn (): RemoveNodeData => $this->executeLocked($node, $caller),
-        );
-    }
-
-    private function executeLocked(Node $node, Node $caller): RemoveNodeData
-    {
-        $node->refresh();
-        $caller->refresh();
         $this->guardRemoval($node, $caller);
         $peerRemoved = false;
         $result = new RemoveNodeData(

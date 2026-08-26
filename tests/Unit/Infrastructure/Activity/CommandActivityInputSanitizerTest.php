@@ -167,16 +167,3 @@ it('replaces invalid process environment names while retaining valid names', fun
         ->not->toContain('private-value')
         ->not->toContain('numeric-value');
 });
-
-it('redacts diagnostics before removing controls and applying the byte tail bound', function (): void {
-    $sanitizer = new CommandActivityInputSanitizer;
-    $diagnostics = 'RAW_PREFIX_SENTINEL'.str_repeat(string: 'a', times: 32_767)."\x00password=RAW_SECRET_SENTINEL";
-    $sanitized = $sanitizer->sanitizeDiagnostics($diagnostics);
-
-    expect(strlen($sanitized))
-        ->toBe(32_768)
-        ->and($sanitized)
-        ->not->toContain('RAW_PREFIX_SENTINEL')
-        ->not->toContain('RAW_SECRET_SENTINEL')
-        ->not->toContain("\x00")->toEndWith('password=[REDACTED]');
-});

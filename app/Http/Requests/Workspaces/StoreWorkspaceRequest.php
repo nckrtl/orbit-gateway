@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace App\Http\Requests\Workspaces;
 
 use App\Data\Workspaces\CreateWorkspaceData;
-use App\Domain\AppDev\AppDevHostPaths;
-use App\Domain\Shared\ResourceOperationException;
 use App\Models\Instance;
 use App\Rules\SupportedPhpVersion;
 use Illuminate\Foundation\Http\FormRequest;
@@ -31,7 +29,7 @@ final class StoreWorkspaceRequest extends FormRequest
                 'nullable',
                 'string',
                 'max:1024',
-                'regex:/\A\/[^\x00-\x1F\x7F]*\z/D',
+                'regex:/\A\/home\/orbit\/.+\z/',
             ],
             'php_version' => [
                 'nullable',
@@ -49,25 +47,10 @@ final class StoreWorkspaceRequest extends FormRequest
                 return;
             }
 
-            $instanceId = $this->integer('instance_id');
-            $name = $this->string('name')->toString();
-            $instance = Instance::query()->with(['app', 'node'])->find($instanceId);
+            $path = $this->string('checkout_path')->toString();
 
-            if ($instance === null || $name === '') {
-                return;
-            }
-
-            try {
-                app(AppDevHostPaths::class)->resolveWorkspaceCheckout(
-                    node: $instance->node,
-                    app: $instance->app->slug,
-                    workspace: $name,
-                    override: $this->string('checkout_path')->toString(),
-                );
-            } catch (ResourceOperationException) {
-                if ($instance->node->platform === 'linux') {
-                    $validator->errors()->add('checkout_path', 'The checkout path is not a safe Orbit path.');
-                }
+            if (! $this->checkoutPathIsSafe($path)) {
+                $validator->errors()->add('checkout_path', 'The checkout path is not a safe Orbit path.');
             }
         }];
     }
@@ -85,5 +68,30 @@ final class StoreWorkspaceRequest extends FormRequest
             checkoutPath: is_string($validated['checkout_path'] ?? null) ? $validated['checkout_path'] : null,
             phpVersion: is_string($validated['php_version'] ?? null) ? $validated['php_version'] : null,
         );
+    }
+
+    private function checkoutPathIsSafe(string $path): bool
+    {
+        if (! str_starts_with($path, '/home/orbit/')) {
+            return false;
+        }
+
+        $segments = explode('/', mb_substr($path, mb_strlen('/home/orbit/')));
+
+        if (preg_match('#\A/home/orbit/(?:apps(?:/|\z)|\.(?!orbit/worktrees/))#', $path) === 1) {
+            return false;
+        }
+
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return false;
+            }
+
+            if (preg_match('/\A[A-Za-z0-9._-]+\z/', $segment) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

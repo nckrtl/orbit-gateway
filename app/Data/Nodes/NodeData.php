@@ -6,7 +6,6 @@ namespace App\Data\Nodes;
 
 use App\Domain\Nodes\RoleName;
 use App\Models\Node;
-use App\Models\NodeRole;
 use Illuminate\Support\Collection;
 use Spatie\LaravelData\Attributes\MapOutputName;
 use Spatie\LaravelData\Data;
@@ -16,10 +15,7 @@ use Spatie\LaravelData\Mappers\SnakeCaseMapper;
 #[MapOutputName(SnakeCaseMapper::class)]
 final class NodeData extends Data
 {
-    /**
-     * @param list<string> $roles
-     * @param list<array<string, mixed>> $roleAssignments
-     */
+    /** @param list<string> $roles */
     public function __construct(
         public int $id,
         public string $name,
@@ -38,7 +34,6 @@ final class NodeData extends Data
         public ?string $failedStep,
         public ?string $errorCode,
         public array $roles,
-        public array $roleAssignments,
     ) {}
 
     public static function fromModel(Node $node): self
@@ -80,7 +75,6 @@ final class NodeData extends Data
             failedStep: $failedStep,
             errorCode: $errorCode,
             roles: self::roles($node),
-            roleAssignments: self::roleAssignments($node),
         );
     }
 
@@ -109,41 +103,5 @@ final class NodeData extends Data
             ->all();
 
         return $sortedRoles;
-    }
-
-    /** @return list<array<string, mixed>> */
-    private static function roleAssignments(Node $node): array
-    {
-        /** @var array<string, int> $roleOrder */
-        $roleOrder = collect(RoleName::cases())
-            ->map(static fn (RoleName $role): string => $role->value)
-            ->values()
-            ->flip()
-            ->map(static fn (int $index): int => $index)
-            ->all();
-
-        /** @mago-expect lint:inline-variable-return Static analysis needs the explicit typed local to preserve the list shape. */
-        $assignments = array_values(
-            $node
-                ->roles
-                ->sortBy(static fn ($assignment): int => $roleOrder[$assignment->role->value] ?? PHP_INT_MAX)
-                ->map(self::serializeRoleAssignment(...))
-                ->all(),
-        );
-
-        return $assignments;
-    }
-
-    /**
-     * @return array<string, mixed>
-     *
-     * @mago-expect lint:inline-variable-return Static analysis needs the explicit array-key refinement.
-     */
-    private static function serializeRoleAssignment(NodeRole $assignment): array
-    {
-        /** @var array<string, mixed> $serialized */
-        $serialized = NodeRoleAssignmentData::fromModel($assignment)->toArray();
-
-        return $serialized;
     }
 }

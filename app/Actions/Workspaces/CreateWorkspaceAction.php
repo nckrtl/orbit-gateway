@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Actions\Workspaces;
 
 use App\Data\Workspaces\CreateWorkspaceData;
-use App\Domain\AppDev\AppDevHostPaths;
 use App\Domain\AppDev\AppDevRuntimeConverger;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Nodes\RoleName;
@@ -20,7 +19,6 @@ final readonly class CreateWorkspaceAction
     public function __construct(
         private AppDevRuntimeConverger $runtime,
         private EnsureWorkspaceCheckoutPathAvailableAction $ensureCheckoutPathAvailable,
-        private AppDevHostPaths $hostPaths,
     ) {}
 
     /** @return array{workspace: Workspace, created: bool} */
@@ -33,12 +31,7 @@ final readonly class CreateWorkspaceAction
             'name' => $data->name,
         ]);
         $created = ! $workspace->exists;
-        $checkoutPath = $this->hostPaths->resolveWorkspaceCheckout(
-            node: $instance->node,
-            app: $instance->app->slug,
-            workspace: $data->name,
-            override: $data->checkoutPath,
-        );
+        $checkoutPath = $data->checkoutPath ?? "/home/orbit/.orbit/worktrees/{$instance->app->slug}/{$data->name}";
         $hostname = "{$data->name}.{$instance->hostname}";
 
         if (filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {

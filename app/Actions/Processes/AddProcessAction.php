@@ -9,7 +9,6 @@ use App\Domain\Processes\DesiredProcessState;
 use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Processes\ProcessRuntime;
 use App\Domain\Processes\ProcessRuntimeManager;
-use App\Domain\Processes\ProcessRuntimeSelector;
 use App\Domain\Processes\ProcessTarget;
 use App\Domain\Processes\ProcessTargetResolver;
 use App\Domain\Shared\LifecycleStatus;
@@ -21,7 +20,6 @@ final readonly class AddProcessAction
 {
     public function __construct(
         private ProcessTargetResolver $targets,
-        private ProcessRuntimeSelector $runtimeSelector,
         private ProcessRuntimeManager $runtime,
     ) {}
 
@@ -82,32 +80,24 @@ final readonly class AddProcessAction
     /** @return array{runtime: ProcessRuntime, working_directory: string, runtime_config: array<string, mixed>, restart_policy: string} */
     private function attributes(#[SensitiveParameter] AddProcessData $data, ProcessTarget $target): array
     {
-        $runtime = $this->runtimeSelector->select($data->runtime, $target->node->platform);
-        $workingDirectory = $data->workingDirectory ?? match ($runtime) {
-            ProcessRuntime::Systemd, ProcessRuntime::Launchd => $target->checkoutPath,
-            ProcessRuntime::Docker => '/app',
-        };
-        $runtimeConfig = match ($runtime) {
-            ProcessRuntime::Systemd => [
+        $workingDirectory =
+            $data->workingDirectory ?? ($data->runtime === ProcessRuntime::Systemd ? $target->checkoutPath : '/app');
+        $runtimeConfig = $data->runtime === ProcessRuntime::Systemd
+            ? [
                 'command' => $data->command,
                 'environment_file' => "{$target->checkoutPath}/.env",
-            ],
-            ProcessRuntime::Launchd => [
-                'command' => $data->command,
-                'environment' => $data->environment,
-            ],
-            ProcessRuntime::Docker => [
+            ]
+            : [
                 'image' => $data->image,
                 'command' => $data->command,
                 'environment' => $data->environment,
                 'ports' => $data->ports,
                 'volumes' => $data->volumes,
-            ],
-        };
-        $runtimeConfig = $this->canonicalRuntimeConfig($runtime, $runtimeConfig);
+            ];
+        $runtimeConfig = $this->canonicalRuntimeConfig($data->runtime, $runtimeConfig);
 
         return [
-            'runtime' => $runtime,
+            'runtime' => $data->runtime,
             'working_directory' => $workingDirectory,
             'runtime_config' => $runtimeConfig,
             'restart_policy' => $data->restartPolicy,
@@ -141,14 +131,18 @@ final readonly class AddProcessAction
         #[SensitiveParameter]
         array $runtimeConfig,
     ): array {
-        if (in_array($runtime, [ProcessRuntime::Docker, ProcessRuntime::Launchd], strict: true)) {
-            $environment = $runtimeConfig['environment'] ?? [];
-
-            if (is_array($environment)) {
-                ksort($environment);
-                $runtimeConfig['environment'] = $environment;
-            }
+        if ($runtime !== ProcessRuntime::Docker) {
+            return $runtimeConfig;
         }
+
+        $environment = $runtimeConfig['environment'] ?? [];
+
+        if (! is_array($environment)) {
+            return $runtimeConfig;
+        }
+
+        ksort($environment);
+        $runtimeConfig['environment'] = $environment;
 
         return $runtimeConfig;
     }

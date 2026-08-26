@@ -69,11 +69,6 @@ final readonly class VpnSettings
         return $this->settings->get($this->scope(), self::DOMAIN) ?? 'orbit';
     }
 
-    public function configuredDomain(): ?string
-    {
-        return $this->settings->get($this->scope(), self::DOMAIN);
-    }
-
     public function privateInterface(): ?string
     {
         return $this->settings->get($this->scope(), self::PRIVATE_INTERFACE);
