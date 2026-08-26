@@ -226,3 +226,84 @@ describe('GET /api/v1/nodes/{node}', function (): void {
             ->toBe('http.404');
     });
 });
+
+describe('GET /api/v1/nodes collection access', function (): void {
+    it('shows all rows to fleet authority, one serving node to a direct consumer, and denies a no-edge consumer', function (): void {
+        $gateway = $this->markAsGateway(Node::query()->create([
+            'name' => 'gateway',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.10',
+            'wireguard_address' => '10.44.0.10',
+        ]));
+        $first = Node::query()->create([
+            'name' => 'alpha',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.11',
+            'wireguard_address' => '10.44.0.11',
+        ]);
+        $second = Node::query()->create([
+            'name' => 'zulu',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.12',
+            'wireguard_address' => '10.44.0.12',
+        ]);
+        $directConsumer = Node::query()->create([
+            'name' => 'direct-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.13',
+            'wireguard_address' => '10.44.0.13',
+        ]);
+        $gatewayAccessConsumer = Node::query()->create([
+            'name' => 'gateway-access-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.14',
+            'wireguard_address' => '10.44.0.14',
+        ]);
+        $noEdgeConsumer = Node::query()->create([
+            'name' => 'no-edge-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.15',
+            'wireguard_address' => '10.44.0.15',
+        ]);
+        $directConsumer->accessibleNodes()->attach($second);
+        $gatewayAccessConsumer->accessibleNodes()->attach($gateway);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [
+                $first->id,
+                $directConsumer->id,
+                $gateway->id,
+                $gatewayAccessConsumer->id,
+                $noEdgeConsumer->id,
+                $second->id,
+            ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gatewayAccessConsumer->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [
+                $first->id,
+                $directConsumer->id,
+                $gateway->id,
+                $gatewayAccessConsumer->id,
+                $noEdgeConsumer->id,
+                $second->id,
+            ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $directConsumer->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $noEdgeConsumer->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'node_access.required');
+    });
+});

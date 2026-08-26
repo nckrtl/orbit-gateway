@@ -311,6 +311,92 @@ describe('workspace API', function (): void {
             ->and($workspace->fresh()?->failed_step)
             ->toBe('workspace-source-remove');
     });
+
+    it('shows all rows to fleet authority, accessible workspaces to a direct consumer, and denies a no-edge consumer', function (): void {
+        $gateway = $this->markAsGateway($this->node);
+        $directConsumer = Node::query()->create([
+            'name' => 'direct-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.40',
+            'wireguard_address' => '10.44.0.40',
+        ]);
+        $gatewayAccessConsumer = Node::query()->create([
+            'name' => 'gateway-access-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.41',
+            'wireguard_address' => '10.44.0.41',
+        ]);
+        $noEdgeConsumer = Node::query()->create([
+            'name' => 'no-edge-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.42',
+            'wireguard_address' => '10.44.0.42',
+        ]);
+        $otherNode = Node::query()->create([
+            'name' => 'other-node',
+            'tld' => 'other.orbit',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.43',
+            'wireguard_address' => '10.44.0.43',
+            'ssh_user' => 'orbit',
+        ]);
+        $otherNode
+            ->roles()
+            ->create([
+                'role' => RoleName::AppDev,
+                'status' => LifecycleStatus::Active,
+            ]);
+        $directConsumer->accessibleNodes()->attach($otherNode);
+        $gatewayAccessConsumer->accessibleNodes()->attach($gateway);
+        $app = OrbitApp::query()->create([
+            'name' => 'Other',
+            'slug' => 'other',
+            'repository_url' => 'git@github.com:acme/other.git',
+        ]);
+        $otherInstance = Instance::query()->create([
+            'app_id' => $app->id,
+            'node_id' => $otherNode->id,
+            'name' => 'other',
+            'environment' => 'development',
+            'checkout_path' => '/home/orbit/apps/other',
+            'hostname' => 'other.other.orbit',
+            'certificate_mode' => CertificateMode::OrbitCa,
+            'status' => LifecycleStatus::Active,
+        ]);
+        $first = create_workspace_for_api_test($this->instance);
+        $second = Workspace::query()->create([
+            'instance_id' => $otherInstance->id,
+            'name' => 'other-feature',
+            'branch' => 'other-feature',
+            'checkout_path' => '/home/orbit/.orbit/worktrees/other/other-feature',
+            'hostname' => 'other-feature.other.other.orbit',
+            'status' => LifecycleStatus::Active,
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+            ->getJson('/api/v1/workspaces')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id, $first->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gatewayAccessConsumer->wireguard_address])
+            ->getJson('/api/v1/workspaces')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id, $first->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $directConsumer->wireguard_address])
+            ->getJson('/api/v1/workspaces')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $noEdgeConsumer->wireguard_address])
+            ->getJson('/api/v1/workspaces')
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'node_access.required');
+    });
 });
 
 function create_workspace_for_api_test(Instance $instance): Workspace

@@ -301,6 +301,101 @@ describe('app validation', function (): void {
     ]);
 });
 
+describe('app list access', function (): void {
+    it('shows all rows to fleet authority, accessible apps to a direct consumer, and denies a no-edge consumer', function (): void {
+        $gateway = $this->operator;
+        $accessibleNode = Node::query()->create([
+            'name' => 'accessible-node',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.20',
+            'wireguard_address' => '10.44.0.20',
+        ]);
+        $inaccessibleNode = Node::query()->create([
+            'name' => 'inaccessible-node',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.21',
+            'wireguard_address' => '10.44.0.21',
+        ]);
+        $directConsumer = Node::query()->create([
+            'name' => 'direct-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.22',
+            'wireguard_address' => '10.44.0.22',
+        ]);
+        $gatewayAccessConsumer = Node::query()->create([
+            'name' => 'gateway-access-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.23',
+            'wireguard_address' => '10.44.0.23',
+        ]);
+        $noEdgeConsumer = Node::query()->create([
+            'name' => 'no-edge-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.24',
+            'wireguard_address' => '10.44.0.24',
+        ]);
+        $directConsumer->accessibleNodes()->attach($accessibleNode);
+        $gatewayAccessConsumer->accessibleNodes()->attach($gateway);
+        $unplaced = OrbitApp::query()->create([
+            'name' => 'Unplaced',
+            'slug' => 'unplaced',
+            'repository_url' => 'https://example.test/unplaced.git',
+        ]);
+        $accessible = OrbitApp::query()->create([
+            'name' => 'Accessible',
+            'slug' => 'accessible',
+            'repository_url' => 'https://example.test/accessible.git',
+        ]);
+        $inaccessible = OrbitApp::query()->create([
+            'name' => 'Inaccessible',
+            'slug' => 'inaccessible',
+            'repository_url' => 'https://example.test/inaccessible.git',
+        ]);
+        Instance::query()->create([
+            'app_id' => $accessible->id,
+            'node_id' => $accessibleNode->id,
+            'name' => 'main',
+            'environment' => 'development',
+            'checkout_path' => '/srv/accessible',
+            'hostname' => 'accessible.example.test',
+            'certificate_mode' => 'orbit-ca',
+        ]);
+        Instance::query()->create([
+            'app_id' => $inaccessible->id,
+            'node_id' => $inaccessibleNode->id,
+            'name' => 'main',
+            'environment' => 'development',
+            'checkout_path' => '/srv/inaccessible',
+            'hostname' => 'inaccessible.example.test',
+            'certificate_mode' => 'orbit-ca',
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+            ->getJson('/api/v1/apps')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$inaccessible->id, $accessible->id, $unplaced->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gatewayAccessConsumer->wireguard_address])
+            ->getJson('/api/v1/apps')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$inaccessible->id, $accessible->id, $unplaced->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $directConsumer->wireguard_address])
+            ->getJson('/api/v1/apps')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$accessible->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $noEdgeConsumer->wireguard_address])
+            ->getJson('/api/v1/apps')
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'node_access.required');
+    });
+});
+
 /** @return array{database: string, query: string, command: string, environment: string} */
 function app_api_default_secrets(): array
 {

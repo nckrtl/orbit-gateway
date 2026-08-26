@@ -628,6 +628,78 @@ describe('instance API', function (): void {
         'PHP version below the floor' => [['php_version' => '8.3'], 'php_version'],
         'non-DNS instance name' => [['name' => 'dev_one'], 'name'],
     ]);
+
+    it('shows all rows to fleet authority, accessible instances to a direct consumer, and denies a no-edge consumer', function (): void {
+        $gateway = $this->node;
+        $directConsumer = Node::query()->create([
+            'name' => 'direct-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.30',
+            'wireguard_address' => '10.44.0.30',
+        ]);
+        $gatewayAccessConsumer = Node::query()->create([
+            'name' => 'gateway-access-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.31',
+            'wireguard_address' => '10.44.0.31',
+        ]);
+        $noEdgeConsumer = Node::query()->create([
+            'name' => 'no-edge-consumer',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.32',
+            'wireguard_address' => '10.44.0.32',
+        ]);
+        $otherNode = Node::query()->create([
+            'name' => 'other',
+            'tld' => 'other.orbit',
+            'status' => LifecycleStatus::Active,
+            'public_ssh_host' => '192.0.2.33',
+            'wireguard_address' => '10.44.0.33',
+        ]);
+        $otherNode
+            ->roles()
+            ->create([
+                'role' => RoleName::AppDev,
+                'status' => LifecycleStatus::Active,
+            ]);
+        $directConsumer->accessibleNodes()->attach($otherNode);
+        $gatewayAccessConsumer->accessibleNodes()->attach($gateway);
+        $first = create_instance_for_api_test($this->orbitApp, $this->node);
+        $second = Instance::query()->create([
+            'app_id' => $this->orbitApp->id,
+            'node_id' => $otherNode->id,
+            'name' => 'other',
+            'environment' => 'development',
+            'checkout_path' => '/home/orbit/apps/acme-other',
+            'hostname' => 'other.other.orbit',
+            'certificate_mode' => CertificateMode::OrbitCa,
+            'status' => LifecycleStatus::Active,
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+            ->getJson('/api/v1/instances')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id, $first->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $gatewayAccessConsumer->wireguard_address])
+            ->getJson('/api/v1/instances')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id, $first->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $directConsumer->wireguard_address])
+            ->getJson('/api/v1/instances')
+            ->assertOk()
+            ->assertJsonPath('data.*.id', [$second->id]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $noEdgeConsumer->wireguard_address])
+            ->getJson('/api/v1/instances')
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'node_access.required');
+    });
 });
 
 function create_instance_for_api_test(OrbitApp $app, Node $node): Instance

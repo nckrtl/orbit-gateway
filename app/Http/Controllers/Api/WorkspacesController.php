@@ -15,6 +15,7 @@ use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Workspaces\StoreWorkspaceRequest;
 use App\Http\Requests\Workspaces\UpdateWorkspacePhpRequest;
+use App\Models\Node;
 use App\Models\Workspace;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,9 +25,13 @@ final class WorkspacesController extends Controller
     #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListWorkspacesAction $action): JsonResponse
     {
+        /** @mago-expect analysis:mixed-assignment The authenticated peer resolver returns a Node. */
+        $consumer = $request->user();
+        assert($consumer instanceof Node, description: 'Authenticated peer must be a Node.');
+
         return response()->json([
             'data' => $action
-                ->handle()
+                ->handle($consumer)
                 ->map(static fn (Workspace $workspace): array => WorkspaceData::fromModel($workspace)->toArray())
                 ->values()
                 ->all(),

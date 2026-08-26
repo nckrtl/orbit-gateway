@@ -14,6 +14,7 @@ use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Apps\StoreAppRequest;
 use App\Models\App as OrbitApp;
+use App\Models\Node;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -22,9 +23,13 @@ final class AppsController extends Controller
     #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListAppsAction $action): JsonResponse
     {
+        /** @mago-expect analysis:mixed-assignment The authenticated peer resolver returns a Node. */
+        $consumer = $request->user();
+        assert($consumer instanceof Node, description: 'Authenticated peer must be a Node.');
+
         return response()->json([
             'data' => $action
-                ->handle()
+                ->handle($consumer)
                 ->map(static fn (OrbitApp $app): array => AppData::fromModel($app)->toArray())
                 ->values()
                 ->all(),

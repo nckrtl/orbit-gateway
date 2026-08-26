@@ -16,6 +16,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Instances\StoreInstanceRequest;
 use App\Http\Requests\Instances\UpdateInstancePhpRequest;
 use App\Models\Instance;
+use App\Models\Node;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -24,9 +25,13 @@ final class InstancesController extends Controller
     #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListInstancesAction $action): JsonResponse
     {
+        /** @mago-expect analysis:mixed-assignment The authenticated peer resolver returns a Node. */
+        $consumer = $request->user();
+        assert($consumer instanceof Node, description: 'Authenticated peer must be a Node.');
+
         return response()->json([
             'data' => $action
-                ->handle()
+                ->handle($consumer)
                 ->map(static fn (Instance $instance): array => InstanceData::fromModel($instance)->toArray())
                 ->values()
                 ->all(),
