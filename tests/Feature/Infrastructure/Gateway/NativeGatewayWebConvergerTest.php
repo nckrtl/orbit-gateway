@@ -269,7 +269,7 @@ it('does not disturb the published Caddy certificate pair when its atomic link s
 
 it('rejects a checkout outside the configured Orbit home before certificate or sudo work', function (): void {
     [$converger, $processes, $issuer, $orbitHome] = gateway_web_converger(
-        checkoutPath: '/home/nckrtl/orbit/gateway',
+        checkoutPath: '/home/nckrtl/orbit-new/gateway',
     );
 
     try {

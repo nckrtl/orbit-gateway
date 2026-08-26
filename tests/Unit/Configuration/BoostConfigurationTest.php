@@ -241,7 +241,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         '## Use fixed typed argv',
         '## Keep secrets out of command arguments',
         '## Publish managed state atomically',
-        '## Search orbit-old before infrastructure design',
+        '## Search the legacy Orbit project before infrastructure design',
         '## Run the Pest and Mago gates',
     ];
 
@@ -280,7 +280,7 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
             'switch atomically',
             'restore the exact prior file or symlink',
             'explicit recovery path',
-            '/home/nckrtl/orbit-old',
+            '/home/nckrtl/orbit',
             'never port the retired Agent',
         );
     expect($testRules)
