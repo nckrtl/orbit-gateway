@@ -7,16 +7,16 @@ use App\Models\Activity;
 use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
-use App\Models\NodeRole;
 use Illuminate\Support\Str;
 
 beforeEach(function (): void {
-    Node::query()->create([
+    $this->operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->operator = $this->markAsGateway($this->operator);
     $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.2']);
 });
 
@@ -85,12 +85,10 @@ describe('app creation', function (): void {
 });
 
 describe('app defaults projection', function (): void {
-    it('redacts create responses for an active roleless peer without changing stored defaults', function (): void {
+    it('redacts create responses for an active Gateway peer without changing stored defaults', function (): void {
         $secrets = app_api_default_secrets();
         $defaults = app_api_sensitive_defaults($secrets);
         $publicDefaults = app_api_public_defaults();
-
-        expect(NodeRole::query()->count())->toBe(0);
 
         $response = $this
             ->withHeader('X-Orbit-Request-Id', (string) Str::uuid())
@@ -113,7 +111,7 @@ describe('app defaults projection', function (): void {
             ->toBe($defaults);
     });
 
-    it('redacts list and show responses for an active roleless peer without changing stored defaults', function (): void {
+    it('redacts list and show responses for an active Gateway peer without changing stored defaults', function (): void {
         $secrets = app_api_default_secrets();
         $defaults = app_api_sensitive_defaults($secrets);
         $publicDefaults = app_api_public_defaults();
@@ -123,8 +121,6 @@ describe('app defaults projection', function (): void {
             'repository_url' => 'https://github.com/acme/site.git',
             'defaults' => $defaults,
         ]);
-
-        expect(NodeRole::query()->count())->toBe(0);
 
         $listed = $this
             ->withHeader('X-Orbit-Request-Id', (string) Str::uuid())

@@ -9,6 +9,8 @@ use App\Actions\Nodes\ProvisionNodeAction;
 use App\Actions\Nodes\RemoveNodeAction;
 use App\Actions\Nodes\ShowNodeAction;
 use App\Data\Nodes\NodeData;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Nodes\ProvisionNodeRequest;
 use App\Models\Node;
@@ -17,6 +19,7 @@ use Illuminate\Http\Request;
 
 final class NodesController extends Controller
 {
+    #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListNodesAction $action): JsonResponse
     {
         $nodes = $action->handle();
@@ -30,6 +33,7 @@ final class NodesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::Target)]
     public function show(Request $request, Node $node, ShowNodeAction $action): JsonResponse
     {
         return response()->json([
@@ -39,6 +43,7 @@ final class NodesController extends Controller
     }
 
     /** @mago-expect analysis:mixed-assignment The authenticated peer resolver returns a Node. */
+    #[RequiresNodeAccess(ServingNode::Target)]
     public function destroy(Request $request, Node $node, RemoveNodeAction $action): JsonResponse
     {
         $caller = $request->user();
@@ -59,6 +64,7 @@ final class NodesController extends Controller
     }
 
     /** @mago-expect analysis:mixed-assignment Request attributes are an untyped boundary. */
+    #[RequiresNodeAccess(ServingNode::Gateway)]
     public function store(ProvisionNodeRequest $request, ProvisionNodeAction $action): JsonResponse
     {
         $node = $action->execute($request->payload());

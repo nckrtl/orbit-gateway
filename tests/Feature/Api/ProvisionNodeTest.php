@@ -18,12 +18,13 @@ describe('POST /api/v1/nodes', function (): void {
         app()->instance(PrivateDnsManager::class, new class implements PrivateDnsManager {
             public function converge(?Node $pendingNode = null): void {}
         });
-        Node::query()->create([
+        $operator = Node::query()->create([
             'name' => 'operator',
             'status' => LifecycleStatus::Active,
             'public_ssh_host' => '192.0.2.2',
             'wireguard_address' => '10.44.0.2',
         ]);
+        $this->markAsGateway($operator);
         $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.2']);
     });
 

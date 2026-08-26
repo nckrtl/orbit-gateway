@@ -35,12 +35,13 @@ it('recursively redacts sensitive input and URL userinfo before persistence', fu
     $repositoryPassword = (string) Str::uuid();
     $nestedToken = (string) Str::uuid();
     $nestedPassword = (string) Str::uuid();
-    Node::query()->create([
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->markAsGateway($operator);
 
     $this
         ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
@@ -76,12 +77,13 @@ it('redacts secret repository query parameters before persistence and activity s
     $requestId = (string) Str::uuid();
     $repositoryUrl = 'https://example.test/repo.git?token=sentinel&branch=main';
     $redactedRepositoryUrl = 'https://example.test/repo.git?token=[REDACTED]&branch=main';
-    Node::query()->create([
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->markAsGateway($operator);
 
     $failure = $this
         ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
@@ -113,12 +115,13 @@ it('redacts secret repository query parameters before persistence and activity s
 
 it('records route model binding failures as http 404', function (): void {
     $requestId = (string) Str::uuid();
-    Node::query()->create([
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->markAsGateway($operator);
 
     $this
         ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
@@ -133,12 +136,13 @@ it('records route model binding failures as http 404', function (): void {
 it('correlates unhandled failures without exposing exception text', function (): void {
     $requestId = (string) Str::uuid();
     $secret = (string) Str::uuid();
-    Node::query()->create([
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->markAsGateway($operator);
     OrbitApp::creating(static function () use ($secret): never {
         throw new RuntimeException("Unexpected APP_KEY={$secret}");
     });

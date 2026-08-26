@@ -9,6 +9,8 @@ use App\Actions\Firewall\RemoveFirewallRuleAction;
 use App\Actions\Firewall\StoreFirewallRuleAction;
 use App\Data\Firewall\FirewallRuleData;
 use App\Domain\Firewall\FirewallBackendStatus;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Firewall\StoreFirewallRuleRequest;
 use App\Models\FirewallRule;
@@ -17,6 +19,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+#[RequiresNodeAccess(ServingNode::Target)]
 final class FirewallRulesController extends Controller
 {
     public function index(

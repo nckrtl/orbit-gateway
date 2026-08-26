@@ -9,6 +9,8 @@ use App\Actions\Apps\ListAppsAction;
 use App\Actions\Apps\RemoveAppAction;
 use App\Actions\Apps\ShowAppAction;
 use App\Data\Apps\AppData;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Apps\StoreAppRequest;
 use App\Models\App as OrbitApp;
@@ -17,6 +19,7 @@ use Illuminate\Http\Request;
 
 final class AppsController extends Controller
 {
+    #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListAppsAction $action): JsonResponse
     {
         return response()->json([
@@ -29,6 +32,7 @@ final class AppsController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::Gateway)]
     public function store(StoreAppRequest $request, CreateAppAction $action): JsonResponse
     {
         $result = $action->execute($request->payload());
@@ -42,6 +46,7 @@ final class AppsController extends Controller
         );
     }
 
+    #[RequiresNodeAccess(ServingNode::AppOwning)]
     public function show(Request $request, OrbitApp $app, ShowAppAction $action): JsonResponse
     {
         return response()->json([
@@ -50,6 +55,7 @@ final class AppsController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::AppOwning)]
     public function destroy(Request $request, OrbitApp $app, RemoveAppAction $action): JsonResponse
     {
         return response()->json([

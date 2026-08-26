@@ -23,6 +23,7 @@ beforeEach(function (): void {
 it('removes only the target WireGuard peer before reconciling DNS', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $target->update(['wireguard_public_key' => 'TARGET_PUBLIC_KEY']);
 
     $this
@@ -45,6 +46,7 @@ it('removes only the target WireGuard peer before reconciling DNS', function ():
 it('returns 502 and retains active state when WireGuard projection fails', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $target->update(['wireguard_public_key' => 'TARGET_PUBLIC_KEY']);
     $this->peers->removeFailure = new RuntimeException('private projection detail');
 
@@ -67,6 +69,7 @@ it('returns 502 and retains active state when WireGuard projection fails', funct
 it('restores the WireGuard peer and node state when DNS projection fails', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $target->update(['wireguard_public_key' => 'TARGET_PUBLIC_KEY']);
     $this->dns->failure = new RuntimeException('private DNS detail');
 
@@ -89,6 +92,7 @@ it('restores the WireGuard peer and node state when DNS projection fails', funct
 it('returns a stable rollback error when restoring the WireGuard peer fails', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $target->update(['wireguard_public_key' => 'TARGET_PUBLIC_KEY']);
     $this->dns->failure = new RuntimeException('private DNS detail');
     $this->peers->restoreFailure = new RuntimeException('private rollback detail');
@@ -110,6 +114,7 @@ it('returns a stable rollback error when restoring the WireGuard peer fails', fu
 it('restores network projections and active state when persistence deletion fails', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'persistence-failure', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $target->update(['wireguard_public_key' => 'TARGET_PUBLIC_KEY']);
     Node::deleting(static function (Node $node): void {
         if ($node->name === 'persistence-failure') {
@@ -138,6 +143,7 @@ it('restores network projections and active state when persistence deletion fail
 it('removes a roleless node without resources and returns the stable projection result', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $requestId = '47783d46-e420-42f6-868d-31dadf54105c';
 
     $response = $this
@@ -176,6 +182,7 @@ it('removes a roleless node without resources and returns the stable projection 
 
 it('returns 409 without side effects when the caller targets itself', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
+    $caller->accessibleNodes()->attach($caller);
 
     $this
         ->withServerVariables(['REMOTE_ADDR' => $caller->wireguard_address])
@@ -193,6 +200,7 @@ it('returns 409 without side effects when the caller targets itself', function (
 it('returns 409 when the target still has any role assignment', function (RoleName $role): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     NodeRole::query()->create([
         'node_id' => $target->id,
         'role' => $role,
@@ -219,6 +227,7 @@ it('returns 409 when the target still has any role assignment', function (RoleNa
 it('returns 409 when the target still owns an instance', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     $app = OrbitApp::query()->create([
         'name' => 'Acme',
         'slug' => 'acme',
@@ -250,6 +259,7 @@ it('returns 409 when the target still owns an instance', function (): void {
 it('returns 409 when the target still owns a firewall rule', function (): void {
     $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
     $target = remove_node_record(name: 'retired', wireguardAddress: '10.44.0.3');
+    $caller->accessibleNodes()->attach($target);
     FirewallRule::query()->create([
         'node_id' => $target->id,
         'name' => 'https',

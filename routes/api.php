@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\ProcessesController;
 use App\Http\Controllers\Api\RootCaCertificatesController;
 use App\Http\Controllers\Api\WorkspacesController;
 use App\Http\Middleware\RequireActiveWireGuardPeer;
+use App\Http\Middleware\RequireNodeAccess;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
@@ -20,7 +21,10 @@ Route::prefix('v1')->group(function (): void {
     Route::get('ca/root', [RootCaCertificatesController::class, 'show'])
         ->name('gateway:trust');
 
-    Route::middleware(RequireActiveWireGuardPeer::class)->group(function (): void {
+    Route::middleware([
+        RequireActiveWireGuardPeer::class,
+        RequireNodeAccess::class,
+    ])->group(function (): void {
         Route::get('nodes', [NodesController::class, 'index'])
             ->name('node:list');
         Route::get('nodes/{node}', [NodesController::class, 'show'])

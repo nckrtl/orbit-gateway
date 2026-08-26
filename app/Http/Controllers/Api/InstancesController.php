@@ -10,6 +10,8 @@ use App\Actions\Instances\RemoveInstanceAction;
 use App\Actions\Instances\ShowInstanceAction;
 use App\Actions\Instances\UpdateInstancePhpAction;
 use App\Data\Instances\InstanceData;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Instances\StoreInstanceRequest;
 use App\Http\Requests\Instances\UpdateInstancePhpRequest;
@@ -19,6 +21,7 @@ use Illuminate\Http\Request;
 
 final class InstancesController extends Controller
 {
+    #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListInstancesAction $action): JsonResponse
     {
         return response()->json([
@@ -31,6 +34,7 @@ final class InstancesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::InstanceOwning)]
     public function store(StoreInstanceRequest $request, CreateInstanceAction $action): JsonResponse
     {
         $result = $action->execute($request->payload());
@@ -44,6 +48,7 @@ final class InstancesController extends Controller
         );
     }
 
+    #[RequiresNodeAccess(ServingNode::InstanceOwning)]
     public function show(Request $request, Instance $instance, ShowInstanceAction $action): JsonResponse
     {
         return response()->json([
@@ -52,6 +57,7 @@ final class InstancesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::InstanceOwning)]
     public function destroy(Request $request, Instance $instance, RemoveInstanceAction $action): JsonResponse
     {
         return response()->json([
@@ -60,6 +66,7 @@ final class InstancesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::InstanceOwning)]
     public function php(
         UpdateInstancePhpRequest $request,
         Instance $instance,

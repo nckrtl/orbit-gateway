@@ -11,12 +11,12 @@ use Illuminate\Support\Str;
 
 describe('GET /api/v1/nodes caller envelope', function (): void {
     it('lists the active caller in the standard envelope when no other nodes exist', function (): void {
-        $operator = Node::query()->create([
+        $operator = $this->markAsGateway(Node::query()->create([
             'name' => 'operator',
             'status' => LifecycleStatus::Active,
             'public_ssh_host' => '192.0.2.2',
             'wireguard_address' => '10.44.0.2',
-        ]);
+        ]));
         $requestId = (string) Str::uuid();
 
         $this
@@ -151,7 +151,7 @@ describe('GET /api/v1/nodes serialization', function (): void {
 
 describe('GET /api/v1/nodes/{node}', function (): void {
     it('shows one node in the standard envelope without secret fields', function (): void {
-        $node = Node::query()->create([
+        $node = $this->markAsGateway(Node::query()->create([
             'name' => 'alpha',
             'status' => LifecycleStatus::Active,
             'platform' => 'ubuntu',
@@ -167,12 +167,7 @@ describe('GET /api/v1/nodes/{node}', function (): void {
             'ssh_host_key_type' => 'ssh-ed25519',
             'ssh_host_key' => 'ssh-ed25519 AAAA-secret-alpha',
             'ssh_host_fingerprint' => 'SHA256:alpha',
-        ]);
-        NodeRole::query()->create([
-            'node_id' => $node->id,
-            'role' => RoleName::Gateway,
-            'status' => LifecycleStatus::Active,
-        ]);
+        ]));
 
         $requestId = (string) Str::uuid();
 
@@ -203,12 +198,12 @@ describe('GET /api/v1/nodes/{node}', function (): void {
     });
 
     it('returns the existing error envelope when the node is unknown', function (): void {
-        $operator = Node::query()->create([
+        $operator = $this->markAsGateway(Node::query()->create([
             'name' => 'operator',
             'status' => LifecycleStatus::Active,
             'public_ssh_host' => '192.0.2.2',
             'wireguard_address' => '10.44.0.2',
-        ]);
+        ]));
         $requestId = (string) Str::uuid();
 
         $this

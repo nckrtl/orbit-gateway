@@ -33,6 +33,7 @@ beforeEach(function (): void {
         'wireguard_address' => '10.44.0.3',
     ]);
     $node->roles()->create(['role' => 'app-dev', 'status' => LifecycleStatus::Active]);
+    $node = $this->markAsGateway($node);
     $this->node = $node;
     $this->withServerVariables(['REMOTE_ADDR' => $node->wireguard_address]);
     $orbitApp = OrbitApp::query()->create([

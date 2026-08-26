@@ -7,12 +7,15 @@ namespace App\Http\Controllers\Api;
 use App\Actions\Activities\ListActivitiesAction;
 use App\Actions\Activities\ShowActivityAction;
 use App\Data\Activities\ActivityData;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Activities\ListActivitiesRequest;
 use App\Models\Activity;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+#[RequiresNodeAccess(ServingNode::Gateway)]
 final class ActivitiesController extends Controller
 {
     public function index(ListActivitiesRequest $request, ListActivitiesAction $action): JsonResponse

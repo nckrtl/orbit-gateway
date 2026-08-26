@@ -10,6 +10,8 @@ use App\Actions\Workspaces\RemoveWorkspaceAction;
 use App\Actions\Workspaces\ShowWorkspaceAction;
 use App\Actions\Workspaces\UpdateWorkspacePhpAction;
 use App\Data\Workspaces\WorkspaceData;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Workspaces\StoreWorkspaceRequest;
 use App\Http\Requests\Workspaces\UpdateWorkspacePhpRequest;
@@ -19,6 +21,7 @@ use Illuminate\Http\Request;
 
 final class WorkspacesController extends Controller
 {
+    #[RequiresNodeAccess(ServingNode::Collection)]
     public function index(Request $request, ListWorkspacesAction $action): JsonResponse
     {
         return response()->json([
@@ -31,6 +34,7 @@ final class WorkspacesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::WorkspaceOwning)]
     public function store(StoreWorkspaceRequest $request, CreateWorkspaceAction $action): JsonResponse
     {
         $result = $action->execute($request->payload());
@@ -44,6 +48,7 @@ final class WorkspacesController extends Controller
         );
     }
 
+    #[RequiresNodeAccess(ServingNode::WorkspaceOwning)]
     public function show(Request $request, Workspace $workspace, ShowWorkspaceAction $action): JsonResponse
     {
         return response()->json([
@@ -52,6 +57,7 @@ final class WorkspacesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::WorkspaceOwning)]
     public function destroy(Request $request, Workspace $workspace, RemoveWorkspaceAction $action): JsonResponse
     {
         return response()->json([
@@ -60,6 +66,7 @@ final class WorkspacesController extends Controller
         ]);
     }
 
+    #[RequiresNodeAccess(ServingNode::WorkspaceOwning)]
     public function php(
         UpdateWorkspacePhpRequest $request,
         Workspace $workspace,

@@ -16,6 +16,7 @@ beforeEach(function (): void {
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->operator = $this->markAsGateway($this->operator);
     $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.2']);
 });
 

@@ -12,6 +12,7 @@ use App\Domain\Shared\ResourceOperationException;
 use App\Http\Middleware\EnsureRequestId;
 use App\Http\Middleware\RecordCommandActivity;
 use App\Http\Middleware\RequireActiveWireGuardPeer;
+use App\Http\Middleware\RequireNodeAccess;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -41,6 +42,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->api(prepend: [EnsureRequestId::class, RecordCommandActivity::class]);
         $middleware->prependToPriorityList(SubstituteBindings::class, RequireActiveWireGuardPeer::class);
+        $middleware->appendToPriorityList(SubstituteBindings::class, RequireNodeAccess::class);
     })
     ->withExceptions(
         /**

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\Instances\CertificateMode;
+use App\Domain\Nodes\RoleName;
 use App\Domain\Processes\ProcessRuntimeManager;
 use App\Domain\Shared\LifecycleStatus;
 use App\Http\Middleware\RequireActiveWireGuardPeer;
@@ -133,7 +134,7 @@ it('identifies the peer before resolving a route-bound resource', function (stri
     'activity' => '/api/v1/activities/999999',
 ]);
 
-it('allows an active role-less operator to read resource state and process logs', function (): void {
+it('rejects an active role-less operator without direct node access', function (): void {
     $operator = Node::query()->create([
         'name' => 'roleless-operator',
         'status' => LifecycleStatus::Active,
@@ -150,14 +151,25 @@ it('allows an active role-less operator to read resource state and process logs'
         ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
         ->withHeader('X-Orbit-Request-Id', $stateRequestId)
         ->getJson('/api/v1/apps')
-        ->assertOk()
-        ->assertJsonPath('data.0.slug', 'private-app');
+        ->assertForbidden()
+        ->assertJson([
+            'error' => [
+                'code' => 'node_access.required',
+                'message' => 'Node access is required.',
+                'details' => [
+                    'consumer_node' => ['id' => $operator->id, 'name' => $operator->name],
+                    'serving_node' => null,
+                ],
+            ],
+        ]);
     $this
         ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
         ->withHeader('X-Orbit-Request-Id', $logsRequestId)
         ->getJson("/api/v1/processes/{$process->id}/logs?lines=25")
-        ->assertOk()
-        ->assertJsonPath('data.logs', 'sentinel-private-log');
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'node_access.required')
+        ->assertJsonPath('error.details.consumer_node.id', $operator->id)
+        ->assertJsonPath('error.details.serving_node.id', $operator->id);
 
     foreach ([$stateRequestId, $logsRequestId] as $requestId) {
         $activity = Activity::query()->where('request_id', $requestId)->sole();
@@ -165,11 +177,43 @@ it('allows an active role-less operator to read resource state and process logs'
         expect($activity->caller_ip)
             ->toBe($operator->wireguard_address)
             ->and($activity->caller_node_id)
-            ->toBe($operator->id);
+            ->toBe($operator->id)
+            ->and($activity->error_code)
+            ->toBe('node_access.required');
     }
 
     expect($operator->roles()->count())
         ->toBe(0)
+        ->and($runtime->logCalls)
+        ->toBe(0);
+});
+
+it('allows process logs with an explicit self edge', function (): void {
+    $operator = Node::query()->create([
+        'name' => 'self-edge-operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.10',
+        'wireguard_address' => '10.44.0.2',
+    ]);
+    $operator->accessibleNodes()->attach($operator);
+    $process = peer_boundary_process($operator);
+    $runtime = new PeerBoundaryFakeProcessRuntimeManager;
+    app()->instance(ProcessRuntimeManager::class, $runtime);
+    $requestId = (string) Str::uuid();
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $requestId)
+        ->getJson("/api/v1/processes/{$process->id}/logs?lines=25")
+        ->assertOk()
+        ->assertJsonPath('data.logs', 'sentinel-private-log');
+
+    $activity = Activity::query()->where('request_id', $requestId)->sole();
+
+    expect($activity->caller_node_id)
+        ->toBe($operator->id)
+        ->and($activity->error_code)
+        ->toBeNull()
         ->and($runtime->logCalls)
         ->toBe(1);
 });
@@ -235,21 +279,38 @@ it('rejects mutating commands from an inactive registered peer', function (): vo
         ->assertJsonPath('error.code', 'peer.identity_unknown');
 });
 
-it('accepts mutating commands from an active registered peer', function (): void {
-    Node::query()->create([
+it('allows Gateway-scoped app creation from an active Gateway peer', function (): void {
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.10',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $operator
+        ->roles()
+        ->create([
+            'role' => RoleName::Gateway,
+            'status' => LifecycleStatus::Active,
+        ]);
 
-    $this
+    $requestId = (string) Str::uuid();
+
+    $response = $this
         ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
+        ->withHeader('X-Orbit-Request-Id', $requestId)
         ->postJson('/api/v1/apps', [
             'slug' => 'acme',
             'repository_url' => 'https://github.com/acme/site.git',
-        ])
-        ->assertCreated();
+        ]);
+
+    $response->assertCreated();
+
+    $activity = Activity::query()->where('request_id', $requestId)->sole();
+
+    expect($activity->caller_node_id)
+        ->toBe($operator->id)
+        ->and($activity->error_code)
+        ->toBeNull();
 });
 
 it('keeps read-only gateway status available before peer enrollment', function (): void {

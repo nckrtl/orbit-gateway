@@ -10,12 +10,13 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Str;
 
 beforeEach(function (): void {
-    Node::query()->create([
+    $operator = Node::query()->create([
         'name' => 'operator',
         'status' => LifecycleStatus::Active,
         'public_ssh_host' => '192.0.2.2',
         'wireguard_address' => '10.44.0.2',
     ]);
+    $this->markAsGateway($operator);
     $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.2']);
 });
 

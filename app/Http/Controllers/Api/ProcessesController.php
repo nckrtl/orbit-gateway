@@ -13,6 +13,8 @@ use App\Actions\Processes\StartProcessAction;
 use App\Actions\Processes\StopProcessAction;
 use App\Data\Processes\ProcessData;
 use App\Domain\Processes\ProcessRuntimeManager;
+use App\Http\Authorization\RequiresNodeAccess;
+use App\Http\Authorization\ServingNode;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Processes\ListProcessesRequest;
 use App\Http\Requests\Processes\ProcessLogsRequest;
@@ -22,6 +24,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use SensitiveParameter;
 
+#[RequiresNodeAccess(ServingNode::ProcessOwning)]
 final class ProcessesController extends Controller
 {
     public function index(ListProcessesRequest $request, ListProcessesAction $action): JsonResponse

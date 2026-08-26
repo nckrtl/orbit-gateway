@@ -94,6 +94,7 @@ describe('instance API', function (): void {
                 'role' => RoleName::AppDev,
                 'status' => LifecycleStatus::Active,
             ]);
+        $this->node = $this->markAsGateway($this->node);
         $this->withServerVariables(['REMOTE_ADDR' => '10.44.0.3']);
         $this->orbitApp = OrbitApp::query()->create([
             'name' => 'Acme',
@@ -504,7 +505,6 @@ describe('instance API', function (): void {
             'public_ssh_host' => '192.0.2.11',
             'wireguard_address' => '10.44.0.4',
         ]);
-
         $this
             ->postJson('/api/v1/instances', [
                 'app_id' => $this->orbitApp->id,

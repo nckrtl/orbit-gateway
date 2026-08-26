@@ -21,6 +21,7 @@ beforeEach(function (): void {
         'ssh_user' => 'orbit',
         'wireguard_address' => '10.44.0.3',
     ]);
+    $this->node->accessibleNodes()->attach($this->node);
     $this->withServerVariables(['REMOTE_ADDR' => $this->node->wireguard_address]);
 });
 
