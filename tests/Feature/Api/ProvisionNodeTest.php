@@ -7,6 +7,7 @@ use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Shared\LifecycleStatus;
 use App\Infrastructure\Processes\CommandResult;
+use App\Infrastructure\Ssh\SshHostKeyScanException;
 use App\Models\Activity;
 use App\Models\Node;
 use Illuminate\Support\Str;
@@ -417,6 +418,74 @@ describe('POST /api/v1/nodes', function (): void {
             ->toBe(LifecycleStatus::Failed)
             ->and($node->error_code)
             ->toBe('node.ssh_host_key_mismatch');
+    });
+
+    it('persists a stable host key scan failure before first-contact SSH', function (): void {
+        app()->instance(NodeConverger::class, new class implements NodeConverger {
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
+            {
+                throw new SshHostKeyScanException(
+                    message: 'ssh-keyscan could not connect to the target',
+                    result: new CommandResult(
+                        255,
+                        '',
+                        "ssh: connect failed\nAPP_KEY=scan-secret",
+                        50,
+                        true,
+                    ),
+                );
+            }
+        });
+        $requestId = (string) Str::uuid();
+
+        $response = $this
+            ->withHeader('X-Orbit-Request-Id', $requestId)
+            ->postJson('/api/v1/nodes', [
+                'name' => 'first-contact-node',
+                'public_ssh_host' => '192.0.2.63',
+                'architecture' => 'x86_64',
+                'roles' => ['app-prod'],
+                'host_key_fingerprint' => 'SHA256:'.str_repeat(string: 'A', times: 43),
+            ]);
+
+        $response
+            ->assertStatus(502)
+            ->assertJsonPath('error.code', 'node.ssh_host_key_scan_failed')
+            ->assertJsonPath(
+                'error.message',
+                'Could not scan the SSH host key for node [first-contact-node].',
+            )
+            ->assertJsonPath('error.details.step', 'ssh-host-key');
+
+        $node = Node::query()->where('name', 'first-contact-node')->sole();
+        $role = $node->roles()->sole();
+        $activity = Activity::query()->where('request_id', $requestId)->sole();
+
+        expect($response->getContent())
+            ->not
+            ->toContain('ssh-keyscan could not connect to the target', 'scan-secret')
+            ->and($node->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($node->failed_step)
+            ->toBe('ssh-host-key')
+            ->and($node->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($role->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($role->failed_step)
+            ->toBe('ssh-host-key')
+            ->and($role->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($activity->error_code)
+            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($activity->exit_code)
+            ->toBe(255)
+            ->and($activity->properties?->get('stdout'))
+            ->toBeEmpty()
+            ->and($activity->properties?->get('stderr'))
+            ->toBe("ssh: connect failed\nAPP_KEY=[REDACTED]")
+            ->and($activity->properties?->get('output_truncated'))
+            ->toBeTrue();
     });
 
     it('keeps empty-string normalization for other nullable node fields', function (): void {

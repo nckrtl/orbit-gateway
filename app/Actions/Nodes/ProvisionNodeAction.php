@@ -14,6 +14,7 @@ use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
 use App\Domain\WireGuard\WireGuardAddressAllocator;
 use App\Domain\WireGuard\WireGuardEndpoint;
+use App\Infrastructure\Ssh\SshHostKeyScanException;
 use App\Models\Node;
 use Throwable;
 
@@ -105,6 +106,17 @@ final readonly class ProvisionNodeAction
             $this->markFailed($node, $exception);
 
             throw $exception;
+        } catch (SshHostKeyScanException $exception) {
+            $failure = new NodeProvisioningException(
+                step: 'ssh-host-key',
+                errorCode: 'node.ssh_host_key_scan_failed',
+                message: "Could not scan the SSH host key for node [{$node->name}].",
+                previous: $exception,
+                result: $exception->result,
+            );
+            $this->markFailed($node, $failure);
+
+            throw $failure;
         } catch (Throwable $exception) {
             $failure = new NodeProvisioningException(
                 step: 'unknown',

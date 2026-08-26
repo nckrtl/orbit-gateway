@@ -29,7 +29,10 @@ final readonly class SshHostKeyScanner implements HostKeyScanner
         ));
 
         if (! $scan->succeeded()) {
-            throw new SshHostKeyScanException("Could not scan the SSH host key for [{$host}:{$port}].");
+            throw new SshHostKeyScanException(
+                message: "Could not scan the SSH host key for [{$host}:{$port}].",
+                result: $scan,
+            );
         }
 
         $line = $this->preferredKeyLine($scan->stdout);
@@ -52,7 +55,10 @@ final readonly class SshHostKeyScanner implements HostKeyScanner
         $matches = [];
 
         if (! $fingerprint->succeeded() || preg_match('/\b(SHA256:[^\s]+)/', $fingerprint->stdout, $matches) !== 1) {
-            throw new SshHostKeyScanException("Could not fingerprint the SSH host key for [{$host}:{$port}].");
+            throw new SshHostKeyScanException(
+                message: "Could not fingerprint the SSH host key for [{$host}:{$port}].",
+                result: $fingerprint,
+            );
         }
 
         return new HostKey(
