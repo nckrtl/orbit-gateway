@@ -135,18 +135,61 @@ it('uses fixed production identity, clone, ownership, and exact removal guards',
         )
         ->and($ssh->commands[4]->input)
         ->toContain(
-            <<<'BASH'
-                if ! getent passwd "$user" >/dev/null; then
-                    exit 0
-                fi
-                BASH,
+            'if ! getent passwd "$user" >/dev/null; then',
+            'exit 0',
             'test "$(stat -c %G "$app_root")" = "$user"',
-            'test -z "$(find "$app_root" -mindepth 1 -maxdepth 1 -print -quit)"',
+            'test -z "$(find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -print -quit)"',
             'test -z "$(pgrep -u "$user" || true)"',
             'userdel -- "$user"',
             'rmdir -- "$app_root"',
         )
         ->not->toContain('userdel -r', 'rm -rf "$app_root"');
+});
+
+it('cleans only isolated app-owned home entries before deleting the production user', function (): void {
+    [, $instance] = app_prod_runtime_models();
+    $ssh = new AppDevFakeSshExecutor;
+    $users = new RemoteAppProdUserManager(app_prod_ssh($ssh));
+
+    $users->remove($instance);
+
+    $cleanup = $ssh->commands[0]->input ?? '';
+    $processGuard = mb_strpos(
+        haystack: $cleanup,
+        needle: 'test -z "$(pgrep -u "$user" || true)"',
+    );
+    $homeCleanup = mb_strpos(
+        haystack: $cleanup,
+        needle: 'sudo -u "$user" -H -- find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+    );
+    $emptyGuard = mb_strrpos(
+        haystack: $cleanup,
+        needle: 'test -z "$(find -P "$app_root" -xdev -mindepth 1 -maxdepth 1 -print -quit)"',
+    );
+    $userRemoval = mb_strpos(
+        haystack: $cleanup,
+        needle: 'userdel -- "$user"',
+    );
+
+    expect($cleanup)
+        ->toContain(
+            'test -z "$(find -P "$app_root" -xdev -mindepth 1 ! -user "$user" -print -quit)"',
+            'test -z "$(find -P "$app_root" -xdev -mindepth 1 ! -group "$user" -print -quit)"',
+            'findmnt -rn -o TARGET',
+        )
+        ->not
+        ->toContain('userdel -r', 'rm -rf -- "$app_root"')
+        ->and($processGuard)
+        ->toBeInt()
+        ->toBeLessThan($homeCleanup)
+        ->and($homeCleanup)
+        ->toBeInt()
+        ->toBeLessThan($emptyGuard)
+        ->and($emptyGuard)
+        ->toBeInt()
+        ->toBeLessThan($userRemoval)
+        ->and($userRemoval)
+        ->toBeInt();
 });
 
 it('runs every isolated source probe as the exact app user across clone retry and removal', function (): void {
