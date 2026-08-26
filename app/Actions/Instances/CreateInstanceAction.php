@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Instances;
 
 use App\Data\Instances\CreateInstanceData;
+use App\Domain\AppDev\AppDevHostPaths;
 use App\Domain\AppDev\AppDevRuntimeConverger;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\AppProd\AppProdRuntimeConverger;
@@ -23,6 +24,7 @@ final readonly class CreateInstanceAction
     public function __construct(
         private AppDevRuntimeConverger $runtime,
         private AppProdRuntimeConverger $productionRuntime,
+        private AppDevHostPaths $hostPaths,
     ) {}
 
     /** @return array{instance: Instance, created: bool} */
@@ -66,9 +68,7 @@ final readonly class CreateInstanceAction
             'name' => $data->name,
             'node_id' => $node->id,
             'environment' => $data->environment ?? ($role === RoleName::AppProd ? 'production' : 'development'),
-            'checkout_path' => $role === RoleName::AppProd
-                ? "/var/www/{$app->slug}/{$data->name}"
-                : "/home/orbit/apps/{$app->slug}",
+            'checkout_path' => $this->hostPaths->instanceCheckout($node, $role, $app->slug, $data->name),
             'document_root' => $data->documentRoot,
             'php_version' => $data->phpVersion,
             'hostname' => $hostname,
@@ -111,10 +111,10 @@ final readonly class CreateInstanceAction
             );
         }
 
-        if ($node->platform !== 'linux') {
+        if (! in_array(needle: $node->platform, haystack: ['linux', 'darwin'], strict: true)) {
             throw new ResourceOperationException(
                 errorCode: 'instance.platform_unsupported',
-                message: "Node [{$node->name}] does not support Linux application hosting.",
+                message: "Node [{$node->name}] does not support application hosting.",
             );
         }
 
@@ -142,6 +142,13 @@ final readonly class CreateInstanceAction
             throw new ResourceOperationException(
                 errorCode: $errorCode,
                 message: "Node [{$node->name}] does not have an active application role.",
+            );
+        }
+
+        if ($node->platform === 'darwin' && $role === RoleName::AppProd) {
+            throw new ResourceOperationException(
+                errorCode: 'instance.platform_unsupported',
+                message: "Node [{$node->name}] does not support production application hosting.",
             );
         }
 

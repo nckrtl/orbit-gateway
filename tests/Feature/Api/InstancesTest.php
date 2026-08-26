@@ -151,6 +151,29 @@ describe('instance API', function (): void {
             ->toBe($this->node->id);
     });
 
+    it('creates a Darwin app-dev instance in the stored SSH user home', function (): void {
+        $this->node->update([
+            'name' => 'mini',
+            'platform' => 'darwin',
+            'architecture' => 'arm64',
+            'ssh_user' => 'nckrtl',
+            'tld' => 'mini.orbit',
+        ]);
+
+        $this
+            ->postJson('/api/v1/instances', [
+                'app_id' => $this->orbitApp->id,
+                'node_id' => $this->node->id,
+                'name' => 'dev',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.checkout_path', '/Users/nckrtl/apps/acme')
+            ->assertJsonPath('data.hostname', 'acme.mini.orbit')
+            ->assertJsonPath('data.status', LifecycleStatus::Active->value);
+
+        expect($this->runtime->calls)->toBe(['instance:1:8.5']);
+    });
+
     it('creates an isolated app-prod instance with a required public hostname', function (): void {
         $node = Node::query()->create([
             'name' => 'app-prod',
