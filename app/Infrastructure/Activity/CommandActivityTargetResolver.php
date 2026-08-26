@@ -42,7 +42,7 @@ final readonly class CommandActivityTargetResolver
             return $this->createdFirewallRule($request);
         }
 
-        foreach (['firewallRule', 'process', 'workspace', 'instance', 'app', 'node'] as $parameter) {
+        foreach (['firewallRule', 'process', 'workspace', 'instance', 'app', 'servingNode', 'node'] as $parameter) {
             $model = $request->route($parameter);
 
             if ($model instanceof Model) {

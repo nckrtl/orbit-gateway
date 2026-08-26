@@ -64,6 +64,8 @@ it('declares node access scope on every active-peer API route', function (): voi
         'instance:php' => ServingNode::InstanceOwning,
         'instance:remove' => ServingNode::InstanceOwning,
         'instance:show' => ServingNode::InstanceOwning,
+        'node:access:add' => ServingNode::Gateway,
+        'node:access:remove' => ServingNode::Gateway,
         'node:list' => ServingNode::Collection,
         'node:provision' => ServingNode::Gateway,
         'node:remove' => ServingNode::Target,

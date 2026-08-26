@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\AppsController;
 use App\Http\Controllers\Api\FirewallRulesController;
 use App\Http\Controllers\Api\GatewayStatusesController;
 use App\Http\Controllers\Api\InstancesController;
+use App\Http\Controllers\Api\NodeAccessController;
 use App\Http\Controllers\Api\NodesController;
 use App\Http\Controllers\Api\ProcessesController;
 use App\Http\Controllers\Api\RootCaCertificatesController;
@@ -39,6 +40,14 @@ Route::prefix('v1')->group(function (): void {
             ->name('node:provision');
         Route::delete('nodes/{node}', [NodesController::class, 'destroy'])
             ->name('node:remove');
+        Route::put(
+            'nodes/{servingNode}/access/{consumerNode}',
+            [NodeAccessController::class, 'store'],
+        )->name('node:access:add');
+        Route::delete(
+            'nodes/{servingNode}/access/{consumerNode}',
+            [NodeAccessController::class, 'destroy'],
+        )->name('node:access:remove');
         Route::post('nodes/{node}/firewall-rules/allow', [FirewallRulesController::class, 'store'])
             ->defaults('firewall_action', 'allow')
             ->name('firewall:allow');

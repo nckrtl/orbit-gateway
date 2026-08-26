@@ -167,3 +167,73 @@ it('correlates unhandled failures without exposing exception text', function ():
         ->and(Activity::query()->where('request_id', $requestId)->sole()->error_code)
         ->toBe('gateway.unhandled');
 });
+
+it('records node access add and remove commands against the serving node and preserves access failures', function (): void {
+    $gateway = $this->markAsGateway(Node::query()->create([
+        'name' => 'gateway',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.2',
+        'wireguard_address' => '10.44.0.2',
+    ]));
+    $serving = Node::query()->create([
+        'name' => 'serving',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.3',
+        'wireguard_address' => '10.44.0.3',
+    ]);
+    $consumer = Node::query()->create([
+        'name' => 'consumer',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.4',
+        'wireguard_address' => '10.44.0.4',
+    ]);
+    $directOnly = Node::query()->create([
+        'name' => 'direct-only',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.5',
+        'wireguard_address' => '10.44.0.5',
+    ]);
+    $directOnly->accessibleNodes()->attach($serving);
+    $addRequestId = (string) Str::uuid();
+    $removeRequestId = (string) Str::uuid();
+    $forbiddenRequestId = (string) Str::uuid();
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $addRequestId)
+        ->putJson("/api/v1/nodes/{$serving->id}/access/{$consumer->id}")
+        ->assertOk();
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $removeRequestId)
+        ->deleteJson("/api/v1/nodes/{$serving->id}/access/{$consumer->id}")
+        ->assertOk();
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $directOnly->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $forbiddenRequestId)
+        ->putJson("/api/v1/nodes/{$serving->id}/access/{$consumer->id}")
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'node_access.required');
+
+    expect(Activity::query()->where('request_id', $addRequestId)->sole())
+        ->command->toBe('node:access:add')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($serving->id)
+        ->target_node_id->toBe($serving->id);
+
+    expect(Activity::query()->where('request_id', $removeRequestId)->sole())
+        ->command->toBe('node:access:remove')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($serving->id)
+        ->target_node_id->toBe($serving->id);
+
+    expect(Activity::query()->where('request_id', $forbiddenRequestId)->sole())
+        ->command->toBe('node:access:add')
+        ->status->toBe('failed')
+        ->error_code->toBe('node_access.required')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($serving->id)
+        ->target_node_id->toBe($serving->id);
+});
