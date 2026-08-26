@@ -6,10 +6,12 @@ use App\Actions\Nodes\ProvisionNodeAction;
 use App\Data\Nodes\ProvisionNodeData;
 use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Nodes\NodeConverger;
+use App\Domain\Nodes\NodeProjectionOperationLock;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
+use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Models\App;
 use App\Models\Node;
 
@@ -37,6 +39,71 @@ describe(ProvisionNodeAction::class, function (): void {
             }
         };
         app()->instance(PrivateDnsManager::class, $this->privateDns);
+        $this->peers = new class implements GatewayPeerProjectionManager {
+            public int $convergences = 0;
+
+            public ?Throwable $failure = null;
+
+            public function converge(Node $node): void
+            {
+                $this->convergences++;
+
+                if ($this->failure instanceof Throwable) {
+                    throw $this->failure;
+                }
+            }
+
+            public function remove(Node $node): void {}
+
+            public function restore(Node $node): void {}
+        };
+        app()->instance(GatewayPeerProjectionManager::class, $this->peers);
+    });
+
+    it('holds the global projection lock through convergence', function (): void {
+        $lock = new class implements NodeProjectionOperationLock {
+            public bool $held = false;
+
+            public int $calls = 0;
+
+            public function synchronized(Closure $operation): mixed
+            {
+                $this->calls++;
+                $this->held = true;
+
+                try {
+                    return $operation();
+                } finally {
+                    $this->held = false;
+                }
+            }
+        };
+        $converger = new class(static fn (): bool => $lock->held) implements NodeConverger {
+            public bool $observedLock = false;
+
+            public function __construct(
+                private Closure $lockIsHeld,
+            ) {}
+
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
+            {
+                $this->observedLock = ($this->lockIsHeld)();
+            }
+        };
+        app()->instance(NodeProjectionOperationLock::class, $lock);
+        app()->instance(NodeConverger::class, $converger);
+
+        app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
+            name: 'locked-node',
+            publicSshHost: '192.0.2.70',
+            architecture: 'x86_64',
+            expectedSshHostFingerprint: 'SHA256:pinned',
+        ));
+
+        expect($lock->calls)
+            ->toBe(1)
+            ->and($converger->observedLock)
+            ->toBeTrue();
     });
 
     it('activates a node after its requested roles converge', function (): void {
@@ -284,6 +351,8 @@ describe(ProvisionNodeAction::class, function (): void {
             platform: 'darwin',
             architecture: 'arm64',
             tld: 'mac.test',
+            sshUser: 'nckrtl',
+            wireguardPublicKey: base64_encode(str_repeat(string: "\x01", times: 32)),
         ));
 
         expect($node->status)
@@ -293,6 +362,103 @@ describe(ProvisionNodeAction::class, function (): void {
             ->and($node->ssh_host_fingerprint)
             ->toBeNull()
             ->and($converger->calls)
+            ->toBe(0)
+            ->and($this->privateDns->calls)
+            ->toBe(1)
+            ->and($this->peers->convergences)
+            ->toBe(1);
+    });
+
+    it('retains a failed peer projection and resumes an identical Darwin enrollment retry', function (): void {
+        app()->instance(NodeConverger::class, new class implements NodeConverger {
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
+        });
+        $data = new ProvisionNodeData(
+            name: 'retry-mini',
+            publicSshHost: '',
+            roles: [RoleName::AppDev],
+            platform: 'darwin',
+            architecture: 'arm64',
+            tld: 'retry.test',
+            sshUser: 'nckrtl',
+            wireguardPublicKey: base64_encode(str_repeat(string: "\x02", times: 32)),
+        );
+        $this->peers->failure = new RuntimeException('projection failed');
+
+        expect(fn (): Node => app(ProvisionNodeAction::class)->execute($data))
+            ->toThrow(function (NodeProvisioningException $exception): void {
+                expect($exception->step)
+                    ->toBe('wireguard-projection')
+                    ->and($exception->errorCode)
+                    ->toBe('node.wireguard_projection_failed');
+            });
+
+        $failed = Node::query()->where('name', 'retry-mini')->sole();
+
+        expect($failed->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($failed->roles()->sole()->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($this->privateDns->calls)
+            ->toBe(0);
+
+        $this->peers->failure = null;
+        $retried = app(ProvisionNodeAction::class)->execute($data);
+
+        expect($retried->status)
+            ->toBe(LifecycleStatus::Provisioning)
+            ->and($retried->failed_step)
+            ->toBeNull()
+            ->and($retried->roles()->sole()->status)
+            ->toBe(LifecycleStatus::Provisioning)
+            ->and($this->peers->convergences)
+            ->toBe(2)
+            ->and($this->privateDns->calls)
+            ->toBe(1);
+    });
+
+    it('rejects protected Darwin setup input drift before state or projection mutation', function (): void {
+        app()->instance(NodeConverger::class, new class implements NodeConverger {
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
+        });
+        $publicKey = base64_encode(str_repeat(string: "\x03", times: 32));
+        $node = Node::query()->create([
+            'name' => 'protected-mini',
+            'status' => LifecycleStatus::Active,
+            'platform' => 'darwin',
+            'architecture' => 'arm64',
+            'tld' => 'protected.test',
+            'public_ssh_host' => '10.44.0.8',
+            'ssh_user' => 'nckrtl',
+            'wireguard_address' => '10.44.0.8',
+            'wireguard_public_key' => $publicKey,
+        ]);
+        $node->roles()->create(['role' => RoleName::AppDev, 'status' => LifecycleStatus::Active]);
+
+        expect(fn (): Node => app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
+            name: 'protected-mini',
+            publicSshHost: '10.44.0.8',
+            roles: [RoleName::AppDev],
+            platform: 'darwin',
+            architecture: 'x86_64',
+            tld: 'protected.test',
+            sshUser: 'nckrtl',
+            wireguardAddress: '10.44.0.8',
+            wireguardPublicKey: $publicKey,
+        )))->toThrow(function (ResourceOperationException $exception): void {
+            expect($exception->errorCode)
+                ->toBe('node.protected_state_changed')
+                ->and($exception->status)
+                ->toBe(409);
+        });
+
+        expect($node->refresh()->status)
+            ->toBe(LifecycleStatus::Active)
+            ->and($node->architecture)
+            ->toBe('arm64')
+            ->and($node->roles()->sole()->status)
+            ->toBe(LifecycleStatus::Active)
+            ->and($this->peers->convergences)
             ->toBe(0)
             ->and($this->privateDns->calls)
             ->toBe(0);
@@ -325,6 +491,8 @@ describe(ProvisionNodeAction::class, function (): void {
             roles: [RoleName::AppDev],
             platform: 'darwin',
             tld: 'mac.test',
+            sshUser: 'nckrtl',
+            wireguardPublicKey: base64_encode(str_repeat(string: "\x01", times: 32)),
         )))->toThrow(function (ResourceOperationException $exception): void {
             expect($exception->errorCode)->toBe('node.architecture_required');
         });

@@ -18,6 +18,9 @@ final readonly class GatewayCaddyConfigRenderer
                     dial_timeout 10s
                     read_timeout 900s
                     write_timeout 900s
+                    env REMOTE_ADDR 127.0.0.1
+                    env ORBIT_TRUSTED_LOCAL_PROXY 1
+                    env ORBIT_PEER_ADDRESS {remote_host}
                 }
                 file_server
             }

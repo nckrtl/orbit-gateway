@@ -30,7 +30,12 @@ it('leaves only bootstrap discovery and trust commands outside active peer authe
         ->values()
         ->all();
 
-    expect($unprotectedCommands)->toBe(['gateway:status', 'gateway:trust']);
+    expect($unprotectedCommands)->toBe([
+        'gateway:status',
+        'gateway:trust',
+        'node:setup:app-dev:result',
+        'node:setup:app-dev:script',
+    ]);
 });
 
 it('rejects resource state and process logs from unknown or inactive peers', function (
@@ -250,6 +255,33 @@ it('accepts mutating commands from an active registered peer', function (): void
             'repository_url' => 'https://github.com/acme/site.git',
         ])
         ->assertCreated();
+});
+
+it('uses the same trusted FastCGI peer identity for authentication and activity', function (): void {
+    $operator = Node::query()->create([
+        'name' => 'operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.10',
+        'wireguard_address' => '10.44.0.2',
+    ]);
+    $requestId = (string) Str::uuid();
+
+    $this
+        ->withServerVariables([
+            'REMOTE_ADDR' => '127.0.0.1',
+            'ORBIT_TRUSTED_LOCAL_PROXY' => '1',
+            'ORBIT_PEER_ADDRESS' => $operator->wireguard_address,
+        ])
+        ->withHeader('X-Orbit-Request-Id', $requestId)
+        ->getJson('/api/v1/nodes')
+        ->assertOk();
+
+    $activity = Activity::query()->where('request_id', $requestId)->sole();
+
+    expect($activity->caller_ip)
+        ->toBe($operator->wireguard_address)
+        ->and($activity->caller_node_id)
+        ->toBe($operator->id);
 });
 
 it('keeps read-only gateway status available before peer enrollment', function (): void {

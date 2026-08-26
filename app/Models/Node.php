@@ -22,7 +22,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string|null $wireguard_public_key
  * @property string|null $wireguard_endpoint_override
  * @property string|null $dns_server_override
+ * @property string|null $ssh_host_key_type
+ * @property string|null $ssh_host_key
  * @property string|null $ssh_host_fingerprint
+ * @property string|null $failed_step
+ * @property string|null $error_code
  * @property-read \Illuminate\Database\Eloquent\Collection<int, NodeRole> $roles
  */
 final class Node extends Model

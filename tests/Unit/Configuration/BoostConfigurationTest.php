@@ -140,12 +140,10 @@ it('requires the committed rule index and every indexed rule file before edits',
             'Never silently continue when',
             'the required project guidance is incomplete.',
         )
-        ->not->toContain(
-            'in `.ai/rules` when that directory exists',
-            'If `.ai/rules` does not exist, continue without it.',
-            'when that directory exists',
-            'continue without it',
-        );
+        ->not->toContain('in `.ai/rules` when that directory exists')
+        ->not->toContain('If `.ai/rules` does not exist, continue without it.')
+        ->not->toContain('when that directory exists')
+        ->not->toContain('continue without it');
     expect($projectGuidance)
         ->toBeString()
         ->toContain(
@@ -249,7 +247,12 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
         expect(substr_count(haystack: $projectRules, needle: $expectedDecisionHeading))->toBe(1);
     }
 
-    expect($appRules)->toContain('pinned gateway SSH', 'Darwin actions', 'local macOS adapter');
+    expect($appRules)->toContain(
+        'pinned gateway SSH',
+        'Darwin actions',
+        'local macOS adapter',
+        'Darwin steady-state SSH must not use sudo',
+    );
     expect($bootstrapRules)
         ->toContain(
             'composer guidance:check',
@@ -262,6 +265,9 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
     expect($httpRules)
         ->toContain(
             'active WireGuard peer',
+            'node:setup:app-dev:script',
+            'node:setup:app-dev:result',
+            'registered Darwin WireGuard peers',
             'typed data objects',
             'stable error envelopes',
             'redact',
@@ -282,7 +288,8 @@ it('keeps generated scoped guidance complete and de-duplicated', function (): vo
             'explicit recovery path',
             '/home/nckrtl/orbit',
             'never port the retired Agent',
-        );
+        )
+        ->not->toContain('orbit-old');
     expect($testRules)
         ->toContain('Pest 5 TDD', 'Test Impact Analysis', 'without TIA', 'Rector', 'Mago', 'git diff --check');
 });
@@ -328,7 +335,9 @@ it('preserves project and installed testing guidance', function (): void {
     expect($readProjectFile('.ai/skills/pest-testing/SKILL.md'))
         ->toBe($readProjectFile('.agents/skills/pest-testing/SKILL.md'))
         ->toContain('Pest 5', 'Test Impact Analysis', '--no-tia')
-        ->not->toContain('browser testing', 'Livewire', 'Inertia');
+        ->toContain(
+            'This Gateway has no UI or browser-test surface. Do not invent browser, Livewire, or Inertia tests.',
+        );
     expect($readProjectFile('.ai/skills/spatie-security/SKILL.md'))
         ->toBe($readProjectFile('.agents/skills/spatie-security/SKILL.md'));
     expect($readProjectFile('.ai/skills/spatie-security/references/spatie-security-guidelines.md'))
@@ -381,10 +390,11 @@ it('preserves project and installed testing guidance', function (): void {
             'Require exact Orbit ownership before mutation.',
             'Linux privilege escalation',
             'Darwin',
-            'search `~/orbit-old`',
+            'search `/home/nckrtl/orbit/orbit`',
             'Pest 5 with TIA',
             'Mago format/lint/analyse',
-        );
+        )
+        ->not->toContain('orbit-old');
 });
 
 it('keeps two-factor authentication mandatory when the preferred integration is unavailable', function (): void {

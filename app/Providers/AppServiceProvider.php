@@ -8,11 +8,7 @@ use App\Actions\Gateway\BootstrapGatewayAction;
 use App\Actions\Gateway\GatewayBootstrapIdentityValidator;
 use App\Actions\Nodes\AssignRoleAction;
 use App\Console\GatewayBoostInstallCommand;
-use App\Domain\AppDev\AppDevCaddyManager;
-use App\Domain\AppDev\AppDevCertificateManager;
-use App\Domain\AppDev\AppDevPhpFpmManager;
 use App\Domain\AppDev\AppDevRuntimeConverger;
-use App\Domain\AppDev\AppDevSourceManager;
 use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\AppProd\AppProdCaddyManager;
@@ -25,7 +21,10 @@ use App\Domain\Certificates\LeafCertificateSigner;
 use App\Domain\Firewall\FirewallManager;
 use App\Domain\Gateway\GatewayVpnConverger;
 use App\Domain\Gateway\GatewayWebConverger;
+use App\Domain\MacOs\MacOsAppDevSetupRenderer;
+use App\Domain\MacOs\MacOsAppDevVerifier;
 use App\Domain\Nodes\NodeConverger;
+use App\Domain\Nodes\NodeProjectionOperationLock;
 use App\Domain\Processes\ProcessRuntimeManager;
 use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Domain\WireGuard\VpnSettings;
@@ -33,6 +32,7 @@ use App\Infrastructure\Activity\ActivityPropertiesObserver;
 use App\Infrastructure\AppDev\DnsmasqPrivateDnsManager;
 use App\Infrastructure\AppDev\NativeAppDevRuntimeConverger;
 use App\Infrastructure\AppDev\NativeAppDevSourceOperationLock;
+use App\Infrastructure\AppDev\PlatformAppDevRuntimeConverger;
 use App\Infrastructure\AppDev\RemoteAppDevCaddyManager;
 use App\Infrastructure\AppDev\RemoteAppDevCertificateManager;
 use App\Infrastructure\AppDev\RemoteAppDevPhpFpmManager;
@@ -56,9 +56,20 @@ use App\Infrastructure\Gateway\NativeGatewayCaddyConverger;
 use App\Infrastructure\Gateway\NativeGatewayCertificatePublisher;
 use App\Infrastructure\Gateway\NativeGatewayFpmConverger;
 use App\Infrastructure\Gateway\NativeGatewayWebConverger;
+use App\Infrastructure\MacOs\MacOsAppDevCaddyManager;
+use App\Infrastructure\MacOs\MacOsAppDevCertificateManager;
+use App\Infrastructure\MacOs\MacOsAppDevPhpFpmManager;
+use App\Infrastructure\MacOs\MacOsAppDevSetupScriptRenderer;
+use App\Infrastructure\MacOs\MacOsAppDevSetupVerifier as NativeMacOsAppDevSetupVerifier;
+use App\Infrastructure\MacOs\MacOsAppDevSourceManager;
+use App\Infrastructure\MacOs\MacOsLaunchdProcessRuntimeManager;
 use App\Infrastructure\Nodes\NativeNodeConverger;
+use App\Infrastructure\Nodes\NativeNodeProjectionOperationLock;
+use App\Infrastructure\Nodes\NodeBootstrapCommandFactory;
 use App\Infrastructure\Processes\CommandDeadline;
+use App\Infrastructure\Processes\LaunchdProcessRenderer;
 use App\Infrastructure\Processes\NativeProcessRunner;
+use App\Infrastructure\Processes\PlatformProcessRuntimeManager;
 use App\Infrastructure\Processes\ProcessRunner;
 use App\Infrastructure\Processes\RemoteProcessRuntimeManager;
 use App\Infrastructure\Ssh\GatewaySshKeys;
@@ -84,11 +95,6 @@ final class AppServiceProvider extends ServiceProvider
 {
     /** @var array<class-string, class-string> */
     public array $bindings = [
-        AppDevCaddyManager::class => RemoteAppDevCaddyManager::class,
-        AppDevCertificateManager::class => RemoteAppDevCertificateManager::class,
-        AppDevPhpFpmManager::class => RemoteAppDevPhpFpmManager::class,
-        AppDevRuntimeConverger::class => NativeAppDevRuntimeConverger::class,
-        AppDevSourceManager::class => RemoteAppDevSourceManager::class,
         AppProdCaddyManager::class => RemoteAppProdCaddyManager::class,
         AppProdPhpFpmManager::class => RemoteAppProdPhpFpmManager::class,
         AppProdRuntimeConverger::class => NativeAppProdRuntimeConverger::class,
@@ -96,8 +102,8 @@ final class AppServiceProvider extends ServiceProvider
         AppProdUserManager::class => RemoteAppProdUserManager::class,
         FirewallManager::class => NativeUfwFirewallManager::class,
         HostKeyScanner::class => SshHostKeyScanner::class,
-        NodeConverger::class => NativeNodeConverger::class,
-        ProcessRuntimeManager::class => RemoteProcessRuntimeManager::class,
+        MacOsAppDevSetupRenderer::class => MacOsAppDevSetupScriptRenderer::class,
+        MacOsAppDevVerifier::class => NativeMacOsAppDevSetupVerifier::class,
         ProcessRunner::class => NativeProcessRunner::class,
         SshExecutor::class => NativeSshExecutor::class,
         PrivateDnsManager::class => DnsmasqPrivateDnsManager::class,
@@ -111,10 +117,54 @@ final class AppServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(CommandDeadline::class);
+        $this->app->singleton(LaunchdProcessRenderer::class);
+        $this->app->singleton(MacOsLaunchdProcessRuntimeManager::class);
+        $this->app->singleton(
+            ProcessRuntimeManager::class,
+            static fn (): ProcessRuntimeManager => new PlatformProcessRuntimeManager(
+                targets: app(\App\Domain\Processes\ProcessTargetResolver::class),
+                linux: app(RemoteProcessRuntimeManager::class),
+                darwin: app(MacOsLaunchdProcessRuntimeManager::class),
+            ),
+        );
+        $this->app->singleton(
+            NodeProjectionOperationLock::class,
+            static fn (): NodeProjectionOperationLock => new NativeNodeProjectionOperationLock(
+                rtrim(string: (string) config('orbit.home'), characters: '/').'/locks',
+            ),
+        );
         $this->app->singleton(
             AppDevSourceOperationLock::class,
             static fn (): AppDevSourceOperationLock => new NativeAppDevSourceOperationLock(
                 rtrim(string: (string) config('orbit.home'), characters: '/').'/locks/app-dev-source',
+            ),
+        );
+        $this->app->singleton(
+            AppDevRuntimeConverger::class,
+            static fn (): AppDevRuntimeConverger => new PlatformAppDevRuntimeConverger(
+                linux: new NativeAppDevRuntimeConverger(
+                    source: app(RemoteAppDevSourceManager::class),
+                    phpFpm: app(RemoteAppDevPhpFpmManager::class),
+                    certificates: app(RemoteAppDevCertificateManager::class),
+                    caddy: app(RemoteAppDevCaddyManager::class),
+                    dns: app(PrivateDnsManager::class),
+                ),
+                darwinSource: app(MacOsAppDevSourceManager::class),
+                darwinPhpFpm: app(MacOsAppDevPhpFpmManager::class),
+                darwinCertificates: app(MacOsAppDevCertificateManager::class),
+                darwinCaddy: app(MacOsAppDevCaddyManager::class),
+            ),
+        );
+        $this->app->singleton(
+            NodeConverger::class,
+            static fn (): NodeConverger => new NativeNodeConverger(
+                hostKeys: app(HostKeyScanner::class),
+                knownHosts: app(KnownHostsStore::class),
+                sshKeys: app(SshKeyProvider::class),
+                ssh: app(SshExecutor::class),
+                bootstrapCommand: app(NodeBootstrapCommandFactory::class),
+                wireGuard: app(WireGuardPeerConverger::class),
+                appDevCaddy: app(RemoteAppDevCaddyManager::class),
             ),
         );
         $this->app->singleton(

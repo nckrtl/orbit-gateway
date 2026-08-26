@@ -7,11 +7,14 @@ use App\Http\Controllers\Api\AppsController;
 use App\Http\Controllers\Api\FirewallRulesController;
 use App\Http\Controllers\Api\GatewayStatusesController;
 use App\Http\Controllers\Api\InstancesController;
+use App\Http\Controllers\Api\NodeRolesController;
+use App\Http\Controllers\Api\NodeRoleSetupsController;
 use App\Http\Controllers\Api\NodesController;
 use App\Http\Controllers\Api\ProcessesController;
 use App\Http\Controllers\Api\RootCaCertificatesController;
 use App\Http\Controllers\Api\WorkspacesController;
 use App\Http\Middleware\RequireActiveWireGuardPeer;
+use App\Http\Middleware\RequireRegisteredWireGuardPeer;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
@@ -19,6 +22,13 @@ Route::prefix('v1')->group(function (): void {
         ->name('gateway:status');
     Route::get('ca/root', [RootCaCertificatesController::class, 'show'])
         ->name('gateway:trust');
+
+    Route::middleware(RequireRegisteredWireGuardPeer::class)->group(function (): void {
+        Route::post('node-role-setups/app-dev/script', [NodeRoleSetupsController::class, 'script'])
+            ->name('node:setup:app-dev:script');
+        Route::post('node-role-setups/app-dev/result', [NodeRoleSetupsController::class, 'result'])
+            ->name('node:setup:app-dev:result');
+    });
 
     Route::middleware(RequireActiveWireGuardPeer::class)->group(function (): void {
         Route::get('nodes', [NodesController::class, 'index'])
@@ -33,6 +43,8 @@ Route::prefix('v1')->group(function (): void {
             ->name('activity:show');
         Route::post('nodes', [NodesController::class, 'store'])
             ->name('node:provision');
+        Route::post('nodes/{node}/roles', [NodeRolesController::class, 'store'])
+            ->name('node:role:add');
         Route::delete('nodes/{node}', [NodesController::class, 'destroy'])
             ->name('node:remove');
         Route::post('nodes/{node}/firewall-rules/allow', [FirewallRulesController::class, 'store'])

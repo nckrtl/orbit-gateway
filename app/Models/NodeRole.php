@@ -14,6 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $node_id
  * @property RoleName $role
  * @property LifecycleStatus $status
+ * @property string|null $failed_step
+ * @property string|null $error_code
  * @property-read Node $node
  */
 final class NodeRole extends Model

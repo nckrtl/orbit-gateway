@@ -13,8 +13,10 @@ use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Shared\ResourceOperationException;
 use App\Infrastructure\Activity\CommandActivityInputSanitizer;
 use App\Infrastructure\Activity\CommandActivityTargetResolver;
+use App\Infrastructure\Http\TopLevelJsonObjectInspector;
 use App\Infrastructure\Processes\CommandDeadline;
 use App\Infrastructure\Processes\CommandResult;
+use App\Infrastructure\WireGuard\WireGuardPeerAddressResolver;
 use App\Models\Activity;
 use App\Models\Node;
 use App\Models\Process;
@@ -23,12 +25,14 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /**
  * @mago-expect lint:cyclomatic-complexity Command activity maps each bounded domain failure explicitly.
+ * @mago-expect lint:kan-defect Command activity maps each bounded domain failure explicitly.
  * @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware.
  */
 final readonly class RecordCommandActivity
@@ -37,6 +41,8 @@ final readonly class RecordCommandActivity
         private CommandDeadline $deadline,
         private CommandActivityInputSanitizer $inputSanitizer,
         private CommandActivityTargetResolver $targetResolver,
+        private WireGuardPeerAddressResolver $addresses,
+        private TopLevelJsonObjectInspector $jsonInspector,
     ) {}
 
     public function handle(Request $request, Closure $next): Response
@@ -56,6 +62,7 @@ final readonly class RecordCommandActivity
         $activity = $this->start($request);
 
         try {
+            $this->recordInput($activity, $request);
             /** @var Response $response */
             $response = $next($request);
             $this->complete($activity, $request, $response->getStatusCode(), $startedAt);
@@ -82,11 +89,11 @@ final readonly class RecordCommandActivity
             'properties' => [
                 'method' => $request->method(),
                 'path' => $request->path(),
-                'input' => $this->inputSanitizer->sanitize($request->collect()->all()),
+                'input' => [],
             ],
             'request_id' => is_string($requestId) ? $requestId : '',
             'command' => is_string($command) ? $command : 'unknown',
-            'caller_node_id' => $this->callerNodeId($callerIp),
+            'caller_node_id' => $this->callerNodeId($callerIp, is_string($command) ? $command : null),
             'caller_ip' => $callerIp,
             'status' => 'running',
         ]);
@@ -181,21 +188,86 @@ final readonly class RecordCommandActivity
         ];
     }
 
-    private function callerNodeId(string $callerIp): ?int
+    private function callerNodeId(string $callerIp, ?string $command): ?int
     {
-        $node = Node::query()
-            ->where('wireguard_address', $callerIp)
-            ->where('status', 'active')
-            ->first();
+        $query = Node::query()->where('wireguard_address', $callerIp);
 
-        return $node?->id;
+        if (
+            in_array(
+                needle: $command,
+                haystack: ['node:setup:app-dev:script', 'node:setup:app-dev:result'],
+                strict: true,
+            )
+        ) {
+            $query
+                ->where('platform', 'darwin')
+                ->whereIn('status', ['provisioning', 'failed', 'active']);
+
+            return $query->first()?->id;
+        }
+
+        return $query->where('status', 'active')->first()?->id;
     }
 
     private function callerIp(Request $request): string
     {
-        $remoteAddress = $request->server('REMOTE_ADDR');
+        return $this->addresses->resolve($request) ?? '';
+    }
 
-        return is_string($remoteAddress) ? $remoteAddress : '';
+    private function recordInput(Activity $activity, Request $request): void
+    {
+        $command = $request->route()->getName();
+        $allowedKeys = match ($command) {
+            'node:role:add' => ['role'],
+            'node:setup:app-dev:script' => ['platform', 'architecture', 'username', 'home_directory'],
+            'node:setup:app-dev:result' => ['exit_code', 'diagnostics'],
+            default => null,
+        };
+
+        if ($allowedKeys !== null) {
+            try {
+                $this->jsonInspector->inspect($request->getContent(), $allowedKeys);
+            } catch (InvalidArgumentException) {
+                throw ValidationException::withMessages([
+                    'body' => ['The request body must be a JSON object with unique allowed keys.'],
+                ]);
+            }
+        }
+
+        $input = $request->collect()->all();
+        $input = match ($command) {
+            'node:setup:app-dev:script' => array_intersect_key($input, array_flip(['platform', 'architecture'])),
+            'node:setup:app-dev:result' => $this->sanitizeSetupResultInput($input),
+            default => $input,
+        };
+        $properties = $activity->properties?->toArray() ?? [];
+        $activity->update([
+            'properties' => [
+                ...$properties,
+                'input' => $this->inputSanitizer->sanitize($input),
+            ],
+        ]);
+    }
+
+    /**
+     * @param array<array-key, mixed> $input
+     * @return array<array-key, mixed>
+     *
+     * @mago-expect analysis:mixed-assignment Setup diagnostics are checked before sanitization.
+     */
+    private function sanitizeSetupResultInput(array $input): array
+    {
+        $diagnostics = $input['diagnostics'] ?? null;
+
+        if (! is_string($diagnostics)) {
+            unset($input['diagnostics']);
+        }
+
+        if (is_string($diagnostics)) {
+            $input['diagnostics'] = $this->inputSanitizer->sanitizeDiagnostics($diagnostics);
+        }
+
+        return array_intersect_key($input, array_flip(['exit_code', 'diagnostics']));
     }
 
     private function duration(float $startedAt): int

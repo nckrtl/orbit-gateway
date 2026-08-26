@@ -76,11 +76,28 @@ final class ProvisionNodeRequest extends FormRequest
                 'regex:/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\z/D',
             ],
             'public_ssh_port' => ['sometimes', 'integer', 'between:1,65535'],
-            'ssh_user' => ['sometimes', 'string', 'max:32'],
+            'ssh_user' => ['sometimes', 'string', 'max:64'],
             'roles' => ['sometimes', 'array'],
             'roles.*' => ['required', Rule::enum(RoleName::class)],
             // The allocator owns format, family, subnet, and uniqueness errors.
             'wireguard_address' => ['nullable'],
+            'wireguard_public_key' => [
+                'nullable',
+                'string',
+                static function (string $attribute, mixed $value, Closure $fail): void {
+                    if (! is_string($value)) {
+                        $fail("The {$attribute} field must be a canonical WireGuard public key.");
+
+                        return;
+                    }
+
+                    $decoded = base64_decode(string: $value, strict: true);
+
+                    if ($decoded === false || strlen($decoded) !== 32 || base64_encode($decoded) !== $value) {
+                        $fail("The {$attribute} field must be a canonical WireGuard public key.");
+                    }
+                },
+            ],
             'wireguard_endpoint_override' => [
                 'nullable',
                 'string',
@@ -122,8 +139,11 @@ final class ProvisionNodeRequest extends FormRequest
                 $roles,
             )),
             publicSshPort: is_int($validated['public_ssh_port'] ?? null) ? $validated['public_ssh_port'] : 22,
-            sshUser: is_string($validated['ssh_user'] ?? null) ? $validated['ssh_user'] : 'root',
+            sshUser: is_string($validated['ssh_user'] ?? null) ? $validated['ssh_user'] : null,
             wireguardAddress: $this->wireguardAddress($validated),
+            wireguardPublicKey: is_string($validated['wireguard_public_key'] ?? null)
+                ? $validated['wireguard_public_key']
+                : null,
             wireguardEndpointOverride: is_string($validated['wireguard_endpoint_override'] ?? null)
                 ? $validated['wireguard_endpoint_override']
                 : null,
@@ -133,7 +153,7 @@ final class ProvisionNodeRequest extends FormRequest
             expectedSshHostFingerprint: is_string($validated['host_key_fingerprint'] ?? null)
                 ? $validated['host_key_fingerprint']
                 : null,
-            platform: is_string($validated['platform'] ?? null) ? $validated['platform'] : 'linux',
+            platform: is_string($validated['platform'] ?? null) ? $validated['platform'] : null,
             architecture: is_string($validated['architecture'] ?? null) ? $validated['architecture'] : null,
             tld: is_string($validated['tld'] ?? null) ? $validated['tld'] : null,
         );

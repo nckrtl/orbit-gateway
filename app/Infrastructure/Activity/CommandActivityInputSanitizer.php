@@ -143,6 +143,24 @@ final readonly class CommandActivityInputSanitizer
         );
     }
 
+    public function sanitizeDiagnostics(string $diagnostics, int $maximumBytes = 32_768): string
+    {
+        $diagnostics = $this->redactText($diagnostics);
+        $diagnostics = preg_replace(pattern: '/[\x00-\x1F\x7F]/', replacement: '', subject: $diagnostics) ?? '';
+
+        if (strlen($diagnostics) <= $maximumBytes) {
+            return $diagnostics;
+        }
+
+        $start = strlen($diagnostics) - $maximumBytes;
+
+        while ($start < strlen($diagnostics) && (ord($diagnostics[$start]) & 0xC0) === 0x80) {
+            $start++;
+        }
+
+        return substr($diagnostics, $start, $maximumBytes);
+    }
+
     private function isSensitiveKey(string $key): bool
     {
         $underscored = str_replace(search: '-', replace: '_', subject: $key);

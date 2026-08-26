@@ -47,4 +47,11 @@ it('keeps known VPN setting keys inside the typed VPN settings boundary', functi
         ->toBeEmpty()
         ->and(is_file($owner))
         ->toBeTrue();
+
+    $method = new ReflectionMethod(App\Domain\WireGuard\VpnSettings::class, 'configuredDomain');
+
+    expect((string) $method->getReturnType())
+        ->toBe('?string')
+        ->and($method->getNumberOfParameters())
+        ->toBe(0);
 });

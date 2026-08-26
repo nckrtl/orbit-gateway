@@ -41,7 +41,81 @@ describe('GET /api/v1/nodes caller envelope', function (): void {
     });
 });
 
+/** @mago-expect lint:halstead Serialization contract scenarios intentionally assert the complete stable shape. */
 describe('GET /api/v1/nodes serialization', function (): void {
+    it('exposes local setup only for eligible failed Darwin assignments', function (): void {
+        $operator = Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'platform' => 'linux',
+            'architecture' => 'x86_64',
+            'public_ssh_host' => '192.0.2.2',
+            'wireguard_address' => '10.44.0.2',
+        ]);
+        $mini = Node::query()->create([
+            'name' => 'mini',
+            'status' => LifecycleStatus::Failed,
+            'platform' => 'darwin',
+            'architecture' => 'arm64',
+            'public_ssh_host' => '10.44.0.8',
+            'ssh_user' => 'nckrtl',
+            'wireguard_address' => '10.44.0.8',
+            'failed_step' => 'local-setup',
+            'error_code' => 'macos.setup_failed',
+        ]);
+        $mini->roles()->create([
+            'role' => RoleName::AppDev,
+            'status' => LifecycleStatus::Failed,
+            'failed_step' => 'local-setup',
+            'error_code' => 'macos.setup_failed',
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonPath('data.0.name', 'mini')
+            ->assertJsonPath('data.0.role_assignments.0.local_action_required', true)
+            ->assertJsonPath('data.0.role_assignments.0.local_command', 'orbit node:setup app-dev');
+    });
+
+    it('does not expose local app-dev setup for another failed Darwin role', function (): void {
+        $operator = Node::query()->create([
+            'name' => 'operator',
+            'status' => LifecycleStatus::Active,
+            'platform' => 'linux',
+            'architecture' => 'x86_64',
+            'public_ssh_host' => '192.0.2.2',
+            'wireguard_address' => '10.44.0.2',
+        ]);
+        $mini = Node::query()->create([
+            'name' => 'mini',
+            'status' => LifecycleStatus::Failed,
+            'platform' => 'darwin',
+            'architecture' => 'arm64',
+            'public_ssh_host' => '10.44.0.8',
+            'ssh_user' => 'nckrtl',
+            'wireguard_address' => '10.44.0.8',
+            'failed_step' => 'local-setup',
+            'error_code' => 'macos.setup_failed',
+        ]);
+        $mini->roles()->create([
+            'role' => RoleName::Vpn,
+            'status' => LifecycleStatus::Failed,
+            'failed_step' => 'local-setup',
+            'error_code' => 'macos.setup_failed',
+        ]);
+
+        $this
+            ->withServerVariables(['REMOTE_ADDR' => $operator->wireguard_address])
+            ->getJson('/api/v1/nodes')
+            ->assertOk()
+            ->assertJsonPath('data.0.name', 'mini')
+            ->assertJsonPath('data.0.role_assignments.0.local_action_required', false)
+            ->assertJsonPath('data.0.role_assignments.0.local_command', null);
+    });
+
+    /** @mago-expect lint:halstead The complete serialization assertion protects every stable node field. */
     it('lists nodes in deterministic name order with typed serialized fields', function (): void {
         $zulu = Node::query()->create([
             'name' => 'zulu',
@@ -111,6 +185,13 @@ describe('GET /api/v1/nodes serialization', function (): void {
             ->assertJsonPath('data.1.name', 'zulu')
             ->assertJsonPath('data.0.roles', ['gateway', 'app-dev'])
             ->assertJsonPath('data.1.roles', ['vpn'])
+            ->assertJsonPath('data.0.role_assignments.0.role', 'gateway')
+            ->assertJsonPath('data.0.role_assignments.0.status', 'active')
+            ->assertJsonPath('data.0.role_assignments.0.local_action_required', false)
+            ->assertJsonPath('data.0.role_assignments.1.role', 'app-dev')
+            ->assertJsonPath('data.0.role_assignments.1.local_command', null)
+            ->assertJsonPath('data.1.role_assignments.0.role', 'vpn')
+            ->assertJsonPath('data.1.role_assignments.0.status', 'failed')
             ->assertJsonPath('data.0.platform', 'ubuntu')
             ->assertJsonPath('data.0.architecture', 'x86_64')
             ->assertJsonPath('data.0.tld', 'alpha.orbit')
@@ -143,6 +224,7 @@ describe('GET /api/v1/nodes serialization', function (): void {
                     'failed_step',
                     'error_code',
                     'roles',
+                    'role_assignments',
                 ]],
                 'meta' => ['request_id'],
             ]);
@@ -185,6 +267,9 @@ describe('GET /api/v1/nodes/{node}', function (): void {
             ->assertJsonPath('data.id', $node->id)
             ->assertJsonPath('data.name', 'alpha')
             ->assertJsonPath('data.roles', ['gateway'])
+            ->assertJsonPath('data.role_assignments.0.role', 'gateway')
+            ->assertJsonPath('data.role_assignments.0.status', 'active')
+            ->assertJsonPath('data.role_assignments.0.local_action_required', false)
             ->assertJsonPath('data.tld', 'alpha.orbit')
             ->assertJsonPath('data.wireguard_public_key', 'wg-alpha-public')
             ->assertJsonPath('data.wireguard_endpoint_override', 'private.example.com:51820')

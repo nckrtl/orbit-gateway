@@ -25,7 +25,7 @@ it('records one completed activity for each API command', function (): void {
         ->and($activity->status)
         ->toBe('succeeded')
         ->and($activity->caller_ip)
-        ->toBe('127.0.0.1')
+        ->toBeEmpty()
         ->and($activity->duration_ms)
         ->toBeGreaterThanOrEqual(0);
 });
@@ -69,7 +69,9 @@ it('recursively redacts sensitive input and URL userinfo before persistence', fu
         ->and($input['defaults']['database']['password'] ?? null)
         ->toBe('[REDACTED]')
         ->and(json_encode($input))
-        ->not->toContain($repositoryPassword, $nestedToken, $nestedPassword);
+        ->not->toContain($repositoryPassword)
+        ->not->toContain($nestedToken)
+        ->not->toContain($nestedPassword);
 });
 
 it('redacts secret repository query parameters before persistence and activity serialization', function (): void {

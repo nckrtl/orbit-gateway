@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Domain\AppDev\PrivateDnsManager;
+use App\Domain\Nodes\NodeProjectionOperationLock;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\WireGuard\GatewayPeerProjectionManager;
@@ -18,6 +19,29 @@ beforeEach(function (): void {
     $this->peers = new RemoveNodeFakePeerProjection;
     app()->instance(PrivateDnsManager::class, $this->dns);
     app()->instance('App\\Domain\\WireGuard\\GatewayPeerProjectionManager', $this->peers);
+});
+
+it('holds the global projection lock through removal', function (): void {
+    $lock = new class implements NodeProjectionOperationLock {
+        public int $calls = 0;
+
+        public function synchronized(Closure $operation): mixed
+        {
+            $this->calls++;
+
+            return $operation();
+        }
+    };
+    app()->instance(NodeProjectionOperationLock::class, $lock);
+    $caller = remove_node_record(name: 'operator', wireguardAddress: '10.44.0.2');
+    $target = remove_node_record(name: 'other-node', wireguardAddress: '10.44.0.3');
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $caller->wireguard_address])
+        ->deleteJson("/api/v1/nodes/{$target->id}")
+        ->assertOk();
+
+    expect($lock->calls)->toBe(1);
 });
 
 it('removes only the target WireGuard peer before reconciling DNS', function (): void {

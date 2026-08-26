@@ -166,9 +166,16 @@ it('adapts Caddy to a listener bound only to the gateway WireGuard address', fun
 
     expect($result->succeeded())
         ->toBeTrue()
+        ->and($configuration)
+        ->toContain(
+            'env REMOTE_ADDR 127.0.0.1',
+            'env ORBIT_TRUSTED_LOCAL_PROXY 1',
+            'env ORBIT_PEER_ADDRESS {remote_host}',
+        )
         ->and($listeners)
         ->toBe(['10.44.0.1:443'])
-        ->not->toContain(':443', '0.0.0.0:443');
+        ->not->toContain(':443')
+        ->not->toContain('0.0.0.0:443');
 });
 
 it('preserves live FPM disk and does not reload when complete effective validation fails', function (): void {
