@@ -56,6 +56,7 @@ describe('workspace API', function (): void {
 
         $this->node = Node::query()->create([
             'name' => 'app-dev',
+            'tld' => 'app-dev.orbit',
             'status' => LifecycleStatus::Active,
             'public_ssh_host' => '192.0.2.10',
             'ssh_user' => 'orbit',
@@ -111,6 +112,26 @@ describe('workspace API', function (): void {
             ->toBe($response->json('data.id'))
             ->and($activity->target_node_id)
             ->toBe($this->node->id);
+    });
+
+    it('rejects workspaces on an active app-prod node with a stable error', function (): void {
+        $this->node->roles()->delete();
+        $this->node
+            ->roles()
+            ->create([
+                'role' => RoleName::AppProd,
+                'status' => LifecycleStatus::Active,
+            ]);
+
+        $this
+            ->postJson('/api/v1/workspaces', [
+                'instance_id' => $this->instance->id,
+                'name' => 'feature-one',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'workspace.unsupported_for_app_prod');
+
+        expect($this->runtime->calls)->toBeEmpty();
     });
 
     it('accepts a safe absolute checkout path and resumes failed convergence', function (): void {

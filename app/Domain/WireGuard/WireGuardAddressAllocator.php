@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace App\Domain\WireGuard;
 
-use App\Domain\Settings\SettingRepository;
-use App\Domain\Settings\SettingScope;
-use App\Domain\Settings\SettingScopeType;
 use App\Domain\Shared\ResourceOperationException;
 use App\Models\Node;
 
@@ -14,7 +11,7 @@ use App\Models\Node;
 final readonly class WireGuardAddressAllocator
 {
     public function __construct(
-        private SettingRepository $settings,
+        private VpnSettings $settings,
     ) {}
 
     public function next(): string
@@ -78,11 +75,7 @@ final readonly class WireGuardAddressAllocator
     /** @return array{int, int, string} */
     private function usableRange(): array
     {
-        $subnet =
-            $this->settings->get(
-                new SettingScope(SettingScopeType::Gateway),
-                'vpn.subnet',
-            ) ?? '10.44.0.0/24';
+        $subnet = $this->settings->subnet();
         [$networkAddress, $prefix] = array_pad(
             array: explode(separator: '/', string: $subnet, limit: 2),
             length: 2,

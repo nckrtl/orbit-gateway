@@ -4,7 +4,8 @@
 
 - Store all passwords in 1Password.
 - Ensure each password is unique; no reuse.
-- Enable two-factor authentication through 1Password when available.
+- Enable two-factor authentication for every service that supports it.
+- Use 1Password for the second factor when the service supports that integration; otherwise use another supported authenticator.
 
 ## GitHub
 

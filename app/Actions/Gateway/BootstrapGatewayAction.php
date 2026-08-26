@@ -10,10 +10,8 @@ use App\Domain\Gateway\GatewayVpnConverger;
 use App\Domain\Gateway\GatewayWebConverger;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleName;
-use App\Domain\Settings\SettingRepository;
-use App\Domain\Settings\SettingScope;
-use App\Domain\Settings\SettingScopeType;
 use App\Domain\Shared\LifecycleStatus;
+use App\Domain\WireGuard\VpnSettings;
 use App\Infrastructure\Files\ProtectedFileWriter;
 use App\Infrastructure\Processes\ProcessInvocation;
 use App\Infrastructure\Processes\ProcessRunner;
@@ -23,13 +21,15 @@ use Throwable;
 /**
  * @mago-expect lint:cyclomatic-complexity
  * @mago-expect lint:excessive-parameter-list
+ * @mago-expect lint:kan-defect
+ * @mago-expect lint:too-many-methods
  */
 final readonly class BootstrapGatewayAction
 {
     public function __construct(
         private AssignRoleAction $assignRole,
         private GatewayBootstrapIdentityValidator $identity,
-        private SettingRepository $settings,
+        private VpnSettings $vpnSettings,
         private ProcessRunner $processes,
         private ProtectedFileWriter $files,
         private GatewayVpnConverger $vpn,
@@ -67,13 +67,14 @@ final readonly class BootstrapGatewayAction
                     ]);
             }
 
-            $scope = new SettingScope(SettingScopeType::Gateway);
-            $this->settings->put($scope, 'vpn.subnet', $data->wireguardSubnet);
-            $this->settings->put($scope, 'vpn.port', (string) $data->wireguardPort);
-            $this->settings->put($scope, 'vpn.endpoint', $data->wireguardEndpoint);
-            $this->settings->put($scope, 'vpn.dns_server', $data->dnsServer);
-            $this->settings->put($scope, 'vpn.domain', $data->domain);
-            $this->settings->put($scope, 'vpn.private_interface', $data->privateInterface);
+            $this->vpnSettings->configure(
+                subnet: $data->wireguardSubnet,
+                port: $data->wireguardPort,
+                endpoint: $data->wireguardEndpoint,
+                dnsServer: $data->dnsServer,
+                domain: $data->domain,
+                privateInterface: $data->privateInterface,
+            );
 
             $this->ensureDirectories();
             $this->ensureSshKeys();
@@ -207,39 +208,217 @@ final readonly class BootstrapGatewayAction
 
     private function ensureCertificateAuthority(): void
     {
-        $privateKey = $this->orbitHome.'/ca/root.key';
-        $certificate = $this->orbitHome.'/ca/root.pem';
+        $caDirectory = $this->orbitHome.'/ca';
+        $lockPath = $caDirectory.'/root.lock';
+        $lock = fopen(filename: $lockPath, mode: 'c+');
 
-        if (! is_file($privateKey)) {
+        if ($lock === false) {
+            throw new NodeProvisioningException(
+                step: 'ca-root-lock',
+                errorCode: 'ca.lock_failed',
+                message: 'Could not open the Orbit root CA publication lock.',
+            );
+        }
+
+        try {
+            chmod(filename: $lockPath, permissions: 0o600);
+
+            if (! flock($lock, LOCK_EX)) {
+                throw new NodeProvisioningException(
+                    step: 'ca-root-lock',
+                    errorCode: 'ca.lock_failed',
+                    message: 'Could not acquire the Orbit root CA publication lock.',
+                );
+            }
+
+            $this->ensureLockedCertificateAuthority($caDirectory);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    private function ensureLockedCertificateAuthority(string $caDirectory): void
+    {
+        $privateKey = $caDirectory.'/root.key';
+        $certificate = $caDirectory.'/root.pem';
+        $candidateDirectory = $caDirectory.'/.root-ca.candidate';
+        $privateKeyExists = is_file($privateKey);
+        $certificateExists = is_file($certificate);
+
+        if ($privateKeyExists !== $certificateExists) {
+            throw new NodeProvisioningException(
+                step: 'ca-root-validate',
+                errorCode: 'ca.invalid_state',
+                message: 'The Orbit root CA state is partial; restore the missing root file.',
+            );
+        }
+
+        $this->cleanupCertificateAuthorityCandidate($candidateDirectory);
+
+        if ($privateKeyExists && $certificateExists) {
+            if (! $this->certificateAuthorityPairIsValid($privateKey, $certificate)) {
+                throw new NodeProvisioningException(
+                    step: 'ca-root-validate',
+                    errorCode: 'ca.invalid_state',
+                    message: 'The existing Orbit root CA key and certificate pair is invalid.',
+                );
+            }
+
+            $this->protectCertificateAuthorityPair($privateKey, $certificate);
+
+            return;
+        }
+
+        $candidatePrivateKey = $candidateDirectory.'/root.key';
+        $candidateCertificate = $candidateDirectory.'/root.pem';
+
+        try {
+            if (! mkdir(directory: $candidateDirectory, permissions: 0o700) && ! is_dir($candidateDirectory)) {
+                throw new NodeProvisioningException(
+                    step: 'ca-root-candidate',
+                    errorCode: 'ca.candidate_failed',
+                    message: 'Could not create the Orbit root CA candidate directory.',
+                );
+            }
+
+            chmod(filename: $candidateDirectory, permissions: 0o700);
             $this->run('ca-private-key', 'ca.key_generation_failed', [
                 'openssl',
                 'genpkey',
                 '-algorithm',
                 'ED25519',
                 '-out',
-                $privateKey,
+                $candidatePrivateKey,
             ]);
-        }
-
-        if (! is_file($certificate)) {
+            chmod(filename: $candidatePrivateKey, permissions: 0o600);
             $this->run('ca-root-certificate', 'ca.certificate_generation_failed', [
                 'openssl',
                 'req',
                 '-x509',
                 '-new',
                 '-key',
-                $privateKey,
+                $candidatePrivateKey,
                 '-out',
-                $certificate,
+                $candidateCertificate,
                 '-days',
                 '3650',
                 '-subj',
                 '/CN=Orbit Root CA',
+                '-addext',
+                'basicConstraints=critical,CA:TRUE',
+                '-addext',
+                'keyUsage=critical,keyCertSign,cRLSign',
             ]);
+            chmod(filename: $candidateCertificate, permissions: 0o644);
+
+            if (! $this->certificateAuthorityPairIsValid($candidatePrivateKey, $candidateCertificate)) {
+                throw new NodeProvisioningException(
+                    step: 'ca-root-validate',
+                    errorCode: 'ca.invalid_candidate',
+                    message: 'The generated Orbit root CA key and certificate pair is invalid.',
+                );
+            }
+
+            $this->publishCertificateAuthorityPair(
+                $candidatePrivateKey,
+                $candidateCertificate,
+                $privateKey,
+                $certificate,
+            );
+            $this->protectCertificateAuthorityPair($privateKey, $certificate);
+        } finally {
+            $this->cleanupCertificateAuthorityCandidate($candidateDirectory);
+        }
+    }
+
+    private function certificateAuthorityPairIsValid(string $privateKeyPath, string $certificatePath): bool
+    {
+        $certificate = file_get_contents($certificatePath);
+        $privateKey = file_get_contents($privateKeyPath);
+
+        if (! is_string($certificate) || ! is_string($privateKey)) {
+            return false;
         }
 
+        /** @mago-expect analysis:invalid-argument OpenSSL accepts PEM strings at runtime. */
+        $parsedCertificate = openssl_x509_read(certificate: $certificate);
+        $parsedPrivateKey = openssl_pkey_get_private($privateKey);
+        $details = $parsedCertificate !== false ? openssl_x509_parse($parsedCertificate) : false;
+        /** @mago-expect analysis:mixed-assignment OpenSSL certificate fields are untyped. */
+        $basicConstraints = is_array($details)
+            ? $details['extensions']['basicConstraints'] ?? null
+            : null;
+        $validFrom = is_array($details) ? $details['validFrom_time_t'] : null;
+        $validTo = is_array($details) ? $details['validTo_time_t'] : null;
+        $now = time();
+
+        return (
+            $parsedCertificate !== false
+            && $parsedPrivateKey !== false
+            && is_string($basicConstraints)
+            && str_contains($basicConstraints, 'CA:TRUE')
+            && is_int($validFrom)
+            && $validFrom <= $now
+            && is_int($validTo)
+            && $validTo >= $now
+            && openssl_x509_check_private_key($parsedCertificate, $parsedPrivateKey)
+        );
+    }
+
+    private function publishCertificateAuthorityPair(
+        string $candidatePrivateKey,
+        string $candidateCertificate,
+        string $privateKey,
+        string $certificate,
+    ): void {
+        $privateKeyPublished = false;
+
+        try {
+            if (! rename($candidatePrivateKey, $privateKey)) {
+                throw new \RuntimeException('Could not publish the Orbit root CA private key.');
+            }
+
+            $privateKeyPublished = true;
+
+            if (! rename($candidateCertificate, $certificate)) {
+                throw new \RuntimeException('Could not publish the Orbit root CA certificate.');
+            }
+        } catch (Throwable $exception) {
+            if ($privateKeyPublished && is_file($privateKey)) {
+                rename($privateKey, $candidatePrivateKey);
+            }
+
+            throw new NodeProvisioningException(
+                step: 'ca-root-publish',
+                errorCode: 'ca.publish_failed',
+                message: 'Could not publish the validated Orbit root CA pair.',
+                previous: $exception,
+            );
+        }
+    }
+
+    private function protectCertificateAuthorityPair(string $privateKey, string $certificate): void
+    {
         chmod(filename: $privateKey, permissions: 0o600);
         chmod(filename: $certificate, permissions: 0o644);
+    }
+
+    private function cleanupCertificateAuthorityCandidate(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        foreach (['root.key', 'root.pem'] as $filename) {
+            $path = $directory.'/'.$filename;
+
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+
+        rmdir($directory);
     }
 
     /** @param non-empty-list<string> $arguments */

@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 
 final class BootstrapGatewayCommand extends Command
 {
+    #[\Override]
     protected $signature = 'orbit:bootstrap
         {public-host : Gateway public IP or hostname}
         {--name=gateway : Gateway node name}
@@ -21,6 +22,7 @@ final class BootstrapGatewayCommand extends Command
         {--domain=orbit : Private DNS domain}
         {--private-interface= : Optional private underlay interface}';
 
+    #[\Override]
     protected $description = 'Initialize gateway keys, authority, roles, and VPN settings.';
 
     public function handle(BootstrapGatewayAction $action): int

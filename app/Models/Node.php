@@ -12,9 +12,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int $id
  * @property string $name
  * @property LifecycleStatus $status
+ * @property string $platform
+ * @property string|null $architecture
  * @property string $public_ssh_host
  * @property int $public_ssh_port
  * @property string $ssh_user
+ * @property string|null $tld
  * @property string|null $wireguard_address
  * @property string|null $wireguard_public_key
  * @property string|null $wireguard_endpoint_override
@@ -24,12 +27,20 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 final class Node extends Model
 {
+    /** @var array<string, mixed> */
+    #[\Override]
+    protected $attributes = [
+        'public_ssh_port' => 22,
+    ];
+
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = [
         'name',
         'status',
         'platform',
         'architecture',
+        'tld',
         'public_ssh_host',
         'public_ssh_port',
         'ssh_user',

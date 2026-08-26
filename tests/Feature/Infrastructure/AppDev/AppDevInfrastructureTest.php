@@ -6,6 +6,7 @@ use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Certificates\LeafCertificateSigner;
 use App\Domain\Instances\CertificateMode;
+use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Infrastructure\AppDev\AppDevCaddyConfigRenderer;
 use App\Infrastructure\AppDev\AppDevCaddyPublisher;
@@ -35,6 +36,7 @@ use Tests\Support\AppDevCaddyPublishHarness;
 use Tests\Support\AppDevCaddyPublishScenario;
 use Tests\Support\AppDevFakeProcessRunner;
 use Tests\Support\AppDevFakeSshExecutor;
+use Tests\Support\FpmPublishHarness;
 
 it('renders isolated pools and private Caddy listeners for every active scope', function (): void {
     [$node, $instance, $workspace] = app_dev_runtime_models();
@@ -110,12 +112,90 @@ it('uses only generated instance paths and registered Git worktrees for source r
         ->not->toContain('sudo setfacl')->and($ssh->commands[2]->input)->toContain(
             'worktree list --porcelain',
             'worktree remove --force -- "$checkout"',
+            'test "$(git -C "$instance" remote get-url origin)" = "$repository"',
         )->and($ssh->commands[3]->input)->toContain(
             'case "$(realpath -e "$parent")" in',
             'test ! -L "$checkout"',
             'git -C "$checkout" rev-parse --show-toplevel',
+            'test "$(git -C "$checkout" remote get-url origin)" = "$repository"',
             'rm -rf -- "$checkout"',
-        );
+        )->and($ssh->commands[2]->arguments)->toContain(
+            'git@github.com:acme/site.git',
+        )->and($ssh->commands[3]->arguments)->toContain('git@github.com:acme/site.git');
+});
+
+it('rejects an unsafe stored repository origin before app-dev SSH execution', function (): void {
+    [, $instance] = app_dev_runtime_models();
+    [$manager, $ssh] = source_manager();
+    $sentinel = 'sentinel-app-dev-password';
+    $instance
+        ->app
+        ->forceFill([
+            'repository_url' => "ssh://git:{$sentinel}@example.test/acme/site.git",
+        ])
+        ->save();
+    $exception = null;
+
+    try {
+        $manager->convergeInstance($instance);
+    } catch (InvalidArgumentException $caught) {
+        $exception = $caught;
+    }
+
+    $appOwnedTrace = array_values(array_filter(
+        $exception?->getTrace() ?? [],
+        static fn (array $frame): bool => (
+            is_string($frame['class'] ?? null) && str_starts_with($frame['class'], 'App\\')
+        ),
+    ));
+    $debugOutput = json_encode([
+        'message' => $exception?->getMessage(),
+        'trace' => $appOwnedTrace,
+    ], JSON_THROW_ON_ERROR);
+
+    expect($exception)
+        ->toBeInstanceOf(InvalidArgumentException::class)
+        ->and($exception?->getMessage())
+        ->toBe('The Git repository origin is invalid.')
+        ->and($debugOutput)
+        ->not
+        ->toContain($sentinel)
+        ->and($ssh->commands)
+        ->toBeEmpty();
+});
+
+it('rejects a foreign primary repository before workspace converge or removal changes a worktree', function (): void {
+    [, , $workspace] = app_dev_runtime_models();
+    [$manager, $ssh] = source_manager();
+    $filesystem = new Filesystem;
+    $root = sys_get_temp_dir().'/orbit-workspace-origin-drift-'.Str::uuid();
+    $instanceCheckout = "{$root}/apps/acme";
+    $workspaceCheckout = "{$root}/.orbit/worktrees/acme/feature";
+
+    try {
+        $filesystem->makeDirectory("{$instanceCheckout}/public", mode: 0o700, recursive: true);
+        $filesystem->put("{$instanceCheckout}/public/index.php", '<?php');
+        initialise_acl_test_repository($instanceCheckout, repository: 'git@github.com:foreign/site.git');
+
+        $manager->convergeWorkspace($workspace);
+        $converge = run_app_dev_command_locally($ssh->commands[0], $root);
+
+        expect($converge->succeeded())
+            ->toBeFalse()
+            ->and(file_exists($workspaceCheckout))
+            ->toBeFalse();
+
+        $ssh->commands = [];
+        $manager->removeWorkspace($workspace);
+        $remove = run_app_dev_command_locally($ssh->commands[0], $root);
+
+        expect($remove->succeeded())
+            ->toBeFalse()
+            ->and(is_dir($instanceCheckout))
+            ->toBeTrue();
+    } finally {
+        $filesystem->deleteDirectory($root);
+    }
 });
 
 it('reconciles exact document-root ACLs and refuses symlink drift', function (): void {
@@ -772,19 +852,30 @@ it('releases a shared custom traversal ACL only after the last workspace is remo
         ->toContain('/home/orbit/projects');
 });
 
-it('computes shared traversal releases while the caller holds the per-node source lock', function (): void {
+it('locks workspace removal before calculating shared traversal releases and mutating remote state', function (): void {
     [, $instance, $workspace] = app_dev_runtime_models();
     $workspace->update(['checkout_path' => '/home/orbit/projects/first']);
-    $lock = new class($instance) implements AppDevSourceOperationLock {
-        public bool $entered = false;
+    $ssh = new AppDevFakeSshExecutor;
+    $lock = new class($instance, $ssh) implements AppDevSourceOperationLock {
+        public int $calls = 0;
+
+        /** @var list<int> */
+        public array $nodeIds = [];
+
+        public bool $remoteMutationStartedBeforeLock = false;
+
+        public bool $remoteMutationCompletedBeforeRelease = false;
 
         public function __construct(
             private readonly Instance $instance,
+            private readonly AppDevFakeSshExecutor $ssh,
         ) {}
 
         public function synchronized(int $nodeId, Closure $operation): mixed
         {
-            $this->entered = true;
+            $this->calls++;
+            $this->nodeIds[] = $nodeId;
+            $this->remoteMutationStartedBeforeLock = $this->ssh->commands !== [];
             Workspace::query()->create([
                 'instance_id' => $this->instance->id,
                 'name' => 'concurrent',
@@ -794,20 +885,69 @@ it('computes shared traversal releases while the caller holds the per-node sourc
                 'status' => LifecycleStatus::Provisioning,
             ]);
 
-            return $operation();
+            $result = $operation();
+            $this->remoteMutationCompletedBeforeRelease = count($this->ssh->commands) === 1;
+
+            return $result;
         }
     };
-    [$manager, $ssh] = source_manager($lock);
+    [$manager] = source_manager($lock, $ssh);
 
-    $lock->synchronized(
-        $workspace->instance->node_id,
-        fn (): mixed => $manager->removeWorkspace($workspace),
-    );
+    $manager->removeWorkspace($workspace);
 
-    expect($lock->entered)
+    expect($lock->calls)
+        ->toBe(1)
+        ->and($lock->nodeIds)
+        ->toBe([$workspace->instance->node_id])
+        ->and($lock->remoteMutationStartedBeforeLock)
+        ->toBeFalse()
+        ->and($lock->remoteMutationCompletedBeforeRelease)
         ->toBeTrue()
         ->and($ssh->commands[0]->arguments)
-        ->not->toContain('/home/orbit/projects');
+        ->not
+        ->toContain('/home/orbit/projects')
+        ->and(substr_count(
+            haystack: $ssh->commands[0]->input ?? '',
+            needle: 'test ! -L "$instance"',
+        ))
+        ->toBe(1);
+});
+
+it('keeps the per-node source file lock held across nested synchronization', function (): void {
+    $filesystem = new Filesystem;
+    $directory = sys_get_temp_dir().'/orbit-source-reentrant-lock-'.Str::uuid();
+    $lock = new NativeAppDevSourceOperationLock($directory);
+    $contenderAcquired = null;
+
+    try {
+        $result = $lock->synchronized(42, function () use ($lock, $directory, &$contenderAcquired): string {
+            $nested = $lock->synchronized(42, static fn (): string => 'nested');
+            $contender = fopen(filename: "{$directory}/node-42.lock", mode: 'c+');
+
+            if ($contender === false) {
+                throw new RuntimeException('Could not open the source lock contender.');
+            }
+
+            try {
+                $contenderAcquired = flock($contender, LOCK_EX | LOCK_NB);
+
+                return $nested;
+            } finally {
+                if ($contenderAcquired === true) {
+                    flock($contender, LOCK_UN);
+                }
+
+                fclose($contender);
+            }
+        });
+
+        expect($result)
+            ->toBe('nested')
+            ->and($contenderAcquired)
+            ->toBeFalse();
+    } finally {
+        $filesystem->deleteDirectory($directory);
+    }
 });
 
 it('stores per-node source locks outside mutable checkouts with private modes', function (): void {
@@ -869,10 +1009,85 @@ it('installs selected PHP versions and validates a complete staged FPM configura
         ->toHaveCount(2)
         ->and($publishCalls->first()?->input)
         ->toContain(
+            'exec 9>"$lock_directory/orbit-php-fpm-$version.lock"',
+            'flock -w 30 9',
             'cp -- "$pool" "$temporary_directory/pool.d/"',
             'sudo "php-fpm$version" -y "$temporary_directory/php-fpm.conf" -t',
-            'sudo mv -fT -- "$candidate" "$managed_configuration"',
+            'cmp -s -- "$candidate" "$managed_configuration"',
+            'cp -a -- "$managed_configuration" "$backup"',
+            'sudo mv -fT -- "$staged" "$managed_configuration"',
+            'if ! sudo systemctl enable "php$version-fpm" || ! sudo systemctl reload-or-restart "php$version-fpm"; then',
+            'cp -a -- "$backup" "$rollback"',
+            'sudo mv -fT -- "$rollback" "$managed_configuration"',
+            'sudo systemctl reload-or-restart "php$version-fpm" || true',
         );
+
+    $script = $publishCalls->first()->input ?? '';
+    $lock = mb_strpos(haystack: $script, needle: 'flock -w 30 9');
+    $snapshot = mb_strpos(haystack: $script, needle: 'for pool in "$pool_directory"/*.conf');
+    $validation = mb_strpos(
+        haystack: $script,
+        needle: 'php-fpm$version" -y "$temporary_directory/php-fpm.conf" -t',
+    );
+    $switch = mb_strpos(
+        haystack: $script,
+        needle: 'sudo mv -fT -- "$staged" "$managed_configuration"',
+    );
+    $activation = mb_strpos(haystack: $script, needle: 'if ! sudo systemctl enable');
+    $rollback = mb_strpos(
+        haystack: $script,
+        needle: 'sudo mv -fT -- "$rollback" "$managed_configuration"',
+    );
+
+    expect($lock)
+        ->toBeInt()
+        ->toBeLessThan($snapshot)
+        ->and($validation)
+        ->toBeInt()
+        ->toBeLessThan($switch)
+        ->and($switch)
+        ->toBeInt()
+        ->toBeLessThan($activation)
+        ->and($activation)
+        ->toBeInt()
+        ->toBeLessThan($rollback);
+});
+
+it('restores the exact AppDev FPM file before the recovery reload when activation fails', function (): void {
+    [$node] = app_dev_runtime_models();
+    $harness = new FpmPublishHarness;
+    $managed = $harness->prepare('8.5', 'orbit-scopes.conf', "previous app-dev pool\n");
+    $ssh = new AppDevFakeSshExecutor([new CommandResult(0, "8.5\n", '', 1, false)]);
+
+    try {
+        $manager = new RemoteAppDevPhpFpmManager(
+            sites: new AppDevSiteRepository,
+            renderer: new AppDevPhpFpmConfigRenderer,
+            ssh: app_dev_ssh($ssh),
+            phpRoot: $harness->phpRoot(),
+            lockDirectory: $harness->lockDirectory(),
+        );
+        $manager->converge($node);
+        $result = $harness->run($ssh->commands[2]);
+
+        expect($result->succeeded())
+            ->toBeFalse($result->stderr)
+            ->and(file_get_contents($managed))
+            ->toBe("previous app-dev pool\n")
+            ->and(fileperms($managed) & 0o777)
+            ->toBe(0o600)
+            ->and($harness->serviceCalls())
+            ->toBe(
+                [
+                    'enable php8.5-fpm',
+                    'reload-or-restart php8.5-fpm',
+                    'reload-or-restart php8.5-fpm',
+                ],
+                $result->stderr,
+            );
+    } finally {
+        $harness->cleanup();
+    }
 });
 
 it('rejects an unsupported PHP version before target discovery or installation', function (): void {
@@ -924,6 +1139,11 @@ it('keeps leaf private keys on the target while publishing a gateway-signed cert
             'openssl genpkey -algorithm ED25519',
             'cat "$candidate/request.pem"',
             'openssl verify -CAfile "$current/root.pem" "$current/cert.pem"',
+            'openssl x509 -in "$current/cert.pem" -noout -checkend 2592000',
+            "grep -qx 'ED25519 Public-Key:'",
+            'not_before_epoch=$(date -d "$not_before" +%s)',
+            '[ "$validity_seconds" -ge 34214400 ]',
+            '[ "$validity_seconds" -le 34387200 ]',
             'sha256sum "$current/root.pem"',
         )
         ->and($ssh->commands[0]->arguments)
@@ -935,11 +1155,69 @@ it('keeps leaf private keys on the target while publishing a gateway-signed cert
         ->and($ssh->commands[1]->arguments[2])
         ->toContain(
             'head -c "$certificate_length"',
+            "grep -qx 'ED25519 Public-Key:'",
             'openssl verify -CAfile',
             'sudo install -o root -g caddy -m 0640 -- "$published/key.pem"',
         )
         ->not->toContain('PRIVATE KEY');
 });
+
+it('reuses only current app-dev leaves with the exact Ed25519 extension policy', function (
+    string $keyUsage,
+    string $keyAlgorithm,
+    string $expectedDecision,
+): void {
+    [, $instance] = app_dev_runtime_models();
+    $ssh = new AppDevFakeSshExecutor([
+        new CommandResult(0, "CURRENT\n", '', 1, false),
+    ]);
+    $filesystem = new Filesystem;
+    $root = sys_get_temp_dir().'/orbit-app-dev-certificate-policy-'.(string) Str::uuid();
+    $rootCertificate = create_app_dev_certificate_reuse_fixture(
+        root: $root,
+        scope: "instance-{$instance->id}",
+        hostname: $instance->hostname,
+        keyUsage: $keyUsage,
+        keyAlgorithm: $keyAlgorithm,
+    );
+    $signer = new class($rootCertificate) implements LeafCertificateSigner {
+        public function __construct(
+            private readonly string $rootCertificate,
+        ) {}
+
+        public function sign(string $hostname, string $certificateRequest): string
+        {
+            return "unused\n";
+        }
+
+        public function rootCertificate(): string
+        {
+            return $this->rootCertificate;
+        }
+    };
+    $manager = new RemoteAppDevCertificateManager(app_dev_ssh($ssh), $signer);
+
+    try {
+        $manager->convergeInstance($instance);
+        $result = run_app_dev_certificate_probe_locally($ssh->commands[0], $root);
+        $decision = trim($result->stdout) === 'CURRENT' ? 'reuse' : 'reissue';
+
+        expect($result->succeeded())->toBeTrue($result->stderr);
+        expect($decision)->toBe($expectedDecision);
+
+        if ($expectedDecision === 'reissue') {
+            expect($result->stdout)
+                ->toContain('BEGIN CERTIFICATE REQUEST')
+                ->not->toContain("CURRENT\n");
+        }
+    } finally {
+        $filesystem->deleteDirectory($root);
+    }
+})->with([
+    'Ed25519 with digital signature only' => ['digitalSignature', 'ED25519', 'reuse'],
+    'Ed25519 with legacy key encipherment' => ['digitalSignature,keyEncipherment', 'ED25519', 'reissue'],
+    'RSA with digital signature only' => ['digitalSignature', 'RSA', 'reissue'],
+]);
 
 it('publishes private Caddy and DNS configurations through complete preserved validation aggregates', function (): void {
     [$node] = app_dev_runtime_models();
@@ -961,29 +1239,115 @@ it('publishes private Caddy and DNS configurations through complete preserved va
     expect($ssh->commands[0]->input)
         ->toContain(
             base64_encode($expectedCaddy),
+            'exec 9>"$lock"',
+            'flock -w 30 9',
             'source_main=$(readlink -f "$live_caddyfile")',
             'previous_fragments=$(dirname "$source_main")/fragments',
             'cp --preserve=mode,ownership -- "$fragment" "$candidate/fragments/"',
             'app-dev.caddy',
             "printf 'import %s/%s/fragments/*.caddy\n' \"\$versions\" \"\$version\"",
-            'caddy validate --config "$published/Caddyfile"',
+            'caddy validate --config "$candidate/Caddyfile"',
+            'cmp -s -- "$candidate/fragments/app-dev.caddy" "$previous_fragments/app-dev.caddy"',
             'mv -fT -- "$candidate_link" "$live_caddyfile"',
+            'if ! systemctl enable "$caddy_service" || ! systemctl reload-or-restart "$caddy_service"; then',
+            'mv -fT -- "$rollback_link" "$live_caddyfile"',
+            'cp -a -- "$previous_main" "$rollback_file"',
+            'mv -fT -- "$rollback_file" "$live_caddyfile"',
         )
         ->and(array_slice(array: $ssh->commands[0]->arguments, offset: 0, length: 3))
         ->toBe(['sudo', 'bash', '-seu'])
+        ->and($ssh->commands[0]->arguments)
+        ->toContain('/run/lock/orbit-caddy.lock')
         ->and($processes->invocations)
         ->toHaveCount(1)
         ->and($processes->invocations[0]->input)
         ->toContain(
             base64_encode(
-                "# Managed by Orbit.\nhost-record=acme.app-dev.orbit,10.44.0.3\nhost-record=app-dev.orbit,10.44.0.3\nhost-record=feature.acme.app-dev.orbit,10.44.0.3\n",
+                "# Managed by Orbit.\naddress=/.app-dev.orbit/10.44.0.3\nhost-record=acme.app-dev.orbit,10.44.0.3\nhost-record=feature.acme.app-dev.orbit,10.44.0.3\nhost-record=gateway.orbit,10.44.0.1\nlocal=/app-dev.orbit/\n",
             ),
+            'exec 9>/run/lock/orbit-dnsmasq.lock',
+            'flock -w 30 9',
             'cp -a -- /etc/dnsmasq.d/. "$validation/fragments/"',
             'sed "s#/etc/dnsmasq.d#$validation/fragments#g" /etc/dnsmasq.conf',
             'dnsmasq --test --conf-file="$validation/dnsmasq.conf"',
+            'cmp -s -- "$validation/fragments/orbit-records.conf" "$managed"',
+            'if systemctl is-active --quiet dnsmasq; then',
             'mv -fT -- "$candidate" "$managed"',
             'systemctl restart dnsmasq',
         );
+});
+
+it('projects only the explicit provisioning node before its active transition', function (): void {
+    $pending = Node::query()->create([
+        'name' => 'pending-app-dev',
+        'status' => LifecycleStatus::Provisioning,
+        'platform' => 'linux',
+        'tld' => 'pending.orbit',
+        'public_ssh_host' => '192.0.2.30',
+        'wireguard_address' => '10.44.0.30',
+    ]);
+    Node::query()->create([
+        'name' => 'other-pending-app-dev',
+        'status' => LifecycleStatus::Provisioning,
+        'platform' => 'linux',
+        'tld' => 'other-pending.orbit',
+        'public_ssh_host' => '192.0.2.31',
+        'wireguard_address' => '10.44.0.31',
+    ]);
+    $processes = new AppDevFakeProcessRunner;
+    $manager = new DnsmasqPrivateDnsManager(new AppDevSiteRepository, $processes);
+
+    $manager->converge($pending);
+
+    expect($processes->invocations[0]->input)
+        ->toContain(base64_encode(
+            "# Managed by Orbit.\naddress=/.pending.orbit/10.44.0.30\nlocal=/pending.orbit/\n",
+        ))
+        ->not->toContain(
+            base64_encode('address=/.other-pending.orbit/10.44.0.31'),
+            'other-pending.orbit',
+        );
+});
+
+it('holds the shared projection lock while capturing and publishing DNS intent', function (): void {
+    app_dev_runtime_models();
+    $orbitHome = sys_get_temp_dir().'/orbit-dns-lock-'.Str::uuid();
+    config()->set('orbit.home', $orbitHome);
+    $processes = new class($orbitHome) implements \App\Infrastructure\Processes\ProcessRunner {
+        public bool $observedLock = false;
+
+        public function __construct(
+            private readonly string $orbitHome,
+        ) {}
+
+        public function run(ProcessInvocation $invocation): CommandResult
+        {
+            $lock = fopen($this->orbitHome.'/.dnsmasq-projections.lock', mode: 'c+');
+
+            if ($lock === false) {
+                throw new RuntimeException('Could not inspect the DNS projection lock.');
+            }
+
+            $acquired = flock($lock, LOCK_EX | LOCK_NB);
+            $this->observedLock = ! $acquired;
+
+            if ($acquired) {
+                flock($lock, LOCK_UN);
+            }
+
+            fclose($lock);
+
+            return new CommandResult(0, '', '', 1, false);
+        }
+    };
+
+    try {
+        new DnsmasqPrivateDnsManager(new AppDevSiteRepository, $processes)->converge();
+
+        expect($processes->observedLock)->toBeTrue();
+    } finally {
+        new Filesystem()->deleteDirectory($orbitHome);
+    }
 });
 
 it('retires only the exact package-default caddyfile while preserving modified config and orbit fragments', function (): void {
@@ -1064,6 +1428,38 @@ it('leaves the live caddy aggregate unchanged when staged validation fails durin
     }
 });
 
+it('restores the exact regular Caddyfile before the recovery reload when activation fails', function (): void {
+    $harness = new AppDevCaddyPublishHarness;
+
+    try {
+        $result = $harness->run(
+            publisher: zero_site_publisher($harness),
+            scenario: AppDevCaddyPublishScenario::modifiedConfigWithActivationFailure(
+                "modified config\n",
+                "package default\n",
+            ),
+        );
+
+        expect($result->exitCode)
+            ->not
+            ->toBe(0)
+            ->and($result->liveMainAfter)
+            ->toBe("modified config\n")
+            ->and($result->liveLinkTargetAfter)
+            ->toBeNull()
+            ->and($result->publishedFragments)
+            ->toBeEmpty()
+            ->and($result->serviceCalls)
+            ->toBe([
+                'enable caddy',
+                'reload-or-restart caddy',
+                'reload-or-restart caddy',
+            ]);
+    } finally {
+        $harness->cleanup();
+    }
+});
+
 it('keeps the live Caddy aggregate untouched when candidate validation fails', function (): void {
     [$node] = app_dev_runtime_models();
     $ssh = new AppDevFakeSshExecutor([
@@ -1081,7 +1477,7 @@ it('keeps the live Caddy aggregate untouched when candidate validation fails', f
         });
 
     $script = $ssh->commands[0]->input ?? '';
-    $validation = mb_strpos(haystack: $script, needle: 'caddy validate --config "$published/Caddyfile"');
+    $validation = mb_strpos(haystack: $script, needle: 'caddy validate --config "$candidate/Caddyfile"');
     $liveSwitch = mb_strpos(
         haystack: $script,
         needle: 'mv -fT -- "$candidate_link" "$live_caddyfile"',
@@ -1094,7 +1490,10 @@ it('keeps the live Caddy aggregate untouched when candidate validation fails', f
         ->and($validation)
         ->toBeLessThan($liveSwitch)
         ->and($script)
-        ->toContain('rm -rf -- "$candidate" "$candidate_link"');
+        ->toContain(
+            'rm -rf -- "$candidate"',
+            'rm -f -- "$candidate_link" "$rollback_link" "$rollback_file" "$previous_main"',
+        );
 });
 
 it('keeps the live DNS fragment untouched when effective validation fails', function (): void {
@@ -1117,7 +1516,7 @@ it('keeps the live DNS fragment untouched when effective validation fails', func
         haystack: $script,
         needle: 'mv -fT -- "$candidate" "$managed"',
     );
-    $restart = mb_strpos(haystack: $script, needle: 'systemctl restart dnsmasq');
+    $restart = mb_strrpos(haystack: $script, needle: 'systemctl restart dnsmasq');
 
     expect($validation)
         ->toBeInt()
@@ -1130,7 +1529,16 @@ it('keeps the live DNS fragment untouched when effective validation fails', func
         ->and($liveSwitch)
         ->toBeLessThan($restart)
         ->and($script)
-        ->toContain('trap \'rm -rf -- "$validation"; rm -f -- "$candidate"\' EXIT');
+        ->toContain(
+            'exec 9>/run/lock/orbit-dnsmasq.lock',
+            'flock -w 30 9',
+            'cmp -s -- "$validation/fragments/orbit-records.conf" "$managed"',
+            'if ! systemctl restart dnsmasq; then',
+            'install -o root -g root -m 0644 -- "$backup" "$managed"',
+            'rm -f -- "$managed"',
+            'systemctl restart dnsmasq || true',
+            'trap \'rm -rf -- "$validation"; rm -f -- "$candidate" "$backup"\' EXIT',
+        );
 });
 
 /** @return array{Node, Instance, Workspace} */
@@ -1139,6 +1547,7 @@ function app_dev_runtime_models(string $instancePhp = '8.5'): array
     $node = Node::query()->create([
         'name' => 'app-dev',
         'status' => LifecycleStatus::Active,
+        'tld' => 'app-dev.orbit',
         'public_ssh_host' => '192.0.2.10',
         'wireguard_address' => '10.44.0.3',
         'ssh_user' => 'orbit',
@@ -1168,14 +1577,24 @@ function app_dev_runtime_models(string $instancePhp = '8.5'): array
         'hostname' => 'feature.acme.app-dev.orbit',
         'status' => LifecycleStatus::Active,
     ]);
+    $gateway = Node::query()->create([
+        'name' => 'gateway',
+        'status' => LifecycleStatus::Active,
+        'platform' => 'linux',
+        'public_ssh_host' => '85.9.218.89',
+        'wireguard_address' => '10.44.0.1',
+    ]);
+    $gateway->roles()->create(['role' => RoleName::Gateway, 'status' => LifecycleStatus::Active]);
 
     return [$node, $instance, $workspace];
 }
 
 /** @return array{RemoteAppDevSourceManager, AppDevFakeSshExecutor} */
-function source_manager(?AppDevSourceOperationLock $lock = null): array
-{
-    $ssh = new AppDevFakeSshExecutor;
+function source_manager(
+    ?AppDevSourceOperationLock $lock = null,
+    ?AppDevFakeSshExecutor $ssh = null,
+): array {
+    $ssh ??= new AppDevFakeSshExecutor;
     $lock ??= new class implements AppDevSourceOperationLock {
         public function synchronized(int $nodeId, Closure $operation): mixed
         {
@@ -1233,6 +1652,125 @@ function run_app_dev_command_locally(RemoteCommand $command, string $root): Comm
         arguments: $arguments,
         input: $input,
     ));
+}
+
+function run_app_dev_certificate_probe_locally(RemoteCommand $command, string $root): CommandResult
+{
+    $arguments = array_map(
+        static fn (string $argument): string => str_replace(
+            ['/home/orbit', '/etc/caddy'],
+            [$root, $root.'/etc/caddy'],
+            $argument,
+        ),
+        $command->arguments,
+    );
+    $input = str_replace(
+        ['/home/orbit', '/etc/caddy', 'sudo '],
+        [$root, $root.'/etc/caddy', ''],
+        $command->input ?? '',
+    );
+
+    return new NativeProcessRunner()->run(new ProcessInvocation(
+        arguments: $arguments,
+        input: $input,
+    ));
+}
+
+function create_app_dev_certificate_reuse_fixture(
+    string $root,
+    string $scope,
+    string $hostname,
+    string $keyUsage,
+    string $keyAlgorithm,
+): string {
+    $processes = new NativeProcessRunner;
+    $ca = "{$root}/ca";
+    $current = "{$root}/.orbit/certificates/{$scope}/current";
+    $caddyCurrent = "{$root}/etc/caddy/orbit-certificates/{$scope}/current";
+    $filesystem = new Filesystem;
+    $filesystem->makeDirectory($ca, mode: 0o700, recursive: true);
+    $filesystem->makeDirectory($current, mode: 0o700, recursive: true);
+    $filesystem->makeDirectory($caddyCurrent, mode: 0o700, recursive: true);
+
+    $leafKeyArguments = ['openssl', 'genpkey', '-algorithm', $keyAlgorithm];
+
+    if ($keyAlgorithm === 'RSA') {
+        $leafKeyArguments = [...$leafKeyArguments, '-pkeyopt', 'rsa_keygen_bits:2048'];
+    }
+
+    $leafKeyArguments = [...$leafKeyArguments, '-out', "{$current}/key.pem"];
+    $commands = [
+        ['openssl', 'genpkey', '-algorithm', 'ED25519', '-out', "{$ca}/root.key"],
+        [
+            'openssl',
+            'req',
+            '-x509',
+            '-new',
+            '-key',
+            "{$ca}/root.key",
+            '-out',
+            "{$ca}/root.pem",
+            '-days',
+            '3650',
+            '-subj',
+            '/CN=Orbit Test Root',
+            '-addext',
+            'basicConstraints=critical,CA:TRUE',
+            '-addext',
+            'keyUsage=critical,keyCertSign,cRLSign',
+        ],
+        $leafKeyArguments,
+        [
+            'openssl',
+            'req',
+            '-new',
+            '-key',
+            "{$current}/key.pem",
+            '-out',
+            "{$current}/request.pem",
+            '-subj',
+            "/CN={$hostname}",
+        ],
+    ];
+
+    foreach ($commands as $arguments) {
+        $result = $processes->run(new ProcessInvocation($arguments));
+        expect($result->succeeded())->toBeTrue($result->stderr);
+    }
+
+    file_put_contents("{$current}/leaf.ext", implode("\n", [
+        'basicConstraints=critical,CA:FALSE',
+        "keyUsage=critical,{$keyUsage}",
+        'extendedKeyUsage=serverAuth',
+        "subjectAltName=DNS:{$hostname}",
+    ]));
+    $signed = $processes->run(new ProcessInvocation([
+        'openssl',
+        'x509',
+        '-req',
+        '-in',
+        "{$current}/request.pem",
+        '-CA',
+        "{$ca}/root.pem",
+        '-CAkey',
+        "{$ca}/root.key",
+        '-set_serial',
+        '0x01',
+        '-out',
+        "{$current}/cert.pem",
+        '-days',
+        '397',
+        '-extfile',
+        "{$current}/leaf.ext",
+    ]));
+    expect($signed->succeeded())->toBeTrue($signed->stderr);
+    $rootCertificate = file_get_contents("{$ca}/root.pem");
+    expect($rootCertificate)->toBeString();
+    file_put_contents("{$current}/root.pem", $rootCertificate);
+    copy("{$current}/key.pem", "{$caddyCurrent}/key.pem");
+    copy("{$current}/cert.pem", "{$caddyCurrent}/cert.pem");
+
+    return is_string($rootCertificate) ? $rootCertificate : '';
 }
 
 function acl_for(string $path): string
@@ -1313,6 +1851,7 @@ function zero_site_publisher(AppDevCaddyPublishHarness $harness): AppDevCaddyPub
         versionsDirectory: $harness->etcCaddyPath('orbit-versions'),
         liveCaddyfilePath: $harness->etcCaddyPath('Caddyfile'),
         caddyServiceName: 'caddy',
+        lockPath: $harness->etcCaddyPath('orbit-caddy.lock'),
     );
 }
 

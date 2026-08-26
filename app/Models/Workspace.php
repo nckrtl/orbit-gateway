@@ -25,9 +25,11 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 final class Workspace extends Model
 {
     /** @var array<string, mixed> */
+    #[\Override]
     protected $attributes = ['status' => 'provisioning'];
 
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = [
         'instance_id',
         'name',

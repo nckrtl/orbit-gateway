@@ -15,32 +15,42 @@ final readonly class NativeProcessRunner implements ProcessRunner
 
     public function run(ProcessInvocation $invocation): CommandResult
     {
-        $process = new SymfonyProcess($invocation->arguments);
-        $process->setTimeout($this->deadline?->cap($invocation->timeout) ?? $invocation->timeout);
-        $process->setInput($invocation->input);
+        $protectedInput = $invocation->protectedInput;
 
-        $stdout = '';
-        $stderr = '';
-        $truncated = false;
-        $startedAt = microtime(true);
+        try {
+            $process = new SymfonyProcess($invocation->arguments);
+            $process->setTimeout($this->deadline?->cap($invocation->timeout) ?? $invocation->timeout);
+            $process->setInput($protectedInput?->stream() ?? $invocation->input);
 
-        $exitCode = $process->run(function (string $type, string $buffer) use (&$stdout, &$stderr, &$truncated): void {
-            if ($type === SymfonyProcess::OUT) {
-                $stdout = $this->appendBounded($stdout, $buffer, $truncated);
+            $stdout = '';
+            $stderr = '';
+            $truncated = false;
+            $startedAt = microtime(true);
 
-                return;
-            }
+            $exitCode = $process->run(function (string $type, string $buffer) use (
+                &$stdout,
+                &$stderr,
+                &$truncated,
+            ): void {
+                if ($type === SymfonyProcess::OUT) {
+                    $stdout = $this->appendBounded($stdout, $buffer, $truncated);
 
-            $stderr = $this->appendBounded($stderr, $buffer, $truncated);
-        });
+                    return;
+                }
 
-        return new CommandResult(
-            exitCode: $exitCode,
-            stdout: $stdout,
-            stderr: $stderr,
-            durationMs: (int) round((microtime(true) - $startedAt) * 1_000),
-            truncated: $truncated,
-        );
+                $stderr = $this->appendBounded($stderr, $buffer, $truncated);
+            });
+
+            return new CommandResult(
+                exitCode: $exitCode,
+                stdout: $stdout,
+                stderr: $stderr,
+                durationMs: (int) round((microtime(true) - $startedAt) * 1_000),
+                truncated: $truncated,
+            );
+        } finally {
+            $protectedInput?->close();
+        }
     }
 
     private function appendBounded(string $current, string $buffer, bool &$truncated): string

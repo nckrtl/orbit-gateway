@@ -6,6 +6,8 @@ namespace App\Actions\Instances;
 
 use App\Domain\AppDev\AppDevRuntimeConverger;
 use App\Domain\AppDev\RuntimeConvergenceException;
+use App\Domain\AppProd\AppProdRuntimeConverger;
+use App\Domain\Instances\CertificateMode;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
 use App\Models\Instance;
@@ -15,6 +17,7 @@ final readonly class RemoveInstanceAction
 {
     public function __construct(
         private AppDevRuntimeConverger $runtime,
+        private AppProdRuntimeConverger $productionRuntime,
     ) {}
 
     public function execute(Instance $instance): Instance
@@ -38,7 +41,10 @@ final readonly class RemoveInstanceAction
         $instance->update(['status' => LifecycleStatus::Removing]);
 
         try {
-            $this->runtime->removeInstance($instance->load(['app', 'node']));
+            $runtime = $instance->certificate_mode === CertificateMode::Acme
+                ? $this->productionRuntime
+                : $this->runtime;
+            $runtime->removeInstance($instance->load(['app', 'node']));
         } catch (RuntimeConvergenceException $exception) {
             $this->markFailed($instance, $exception);
 

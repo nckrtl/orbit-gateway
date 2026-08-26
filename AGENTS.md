@@ -10,6 +10,24 @@ Laravel 13 control plane for Orbit.
 - Use Mago for formatting, linting, and analysis.
 - Do not add queues, agents, a UI, Docker orchestration, or permissions.
 
+## Required Guidance Bootstrap
+
+`.ai/rules/index.md` and every rule file indexed by it are required repository state.
+If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete.
+Read every indexed rule whose globs match the files in scope before planning or editing.
+Agents must restore or regenerate the guidance before editing.
+Never silently continue when the required project rules are absent.
+
+## Skills Activation
+
+This project has domain-specific skills in `.agents/skills`. Activate each relevant skill before work in its domain.
+
+## Test Enforcement
+
+- Test every code change by adding or updating a test.
+- Run the affected tests and important failure modes.
+- Read the `testing-best-practices` skill before writing tests.
+
 ===
 
 <laravel-boost-guidelines>
@@ -35,10 +53,6 @@ This application is a Laravel application running on PHP 8.5. You are an expert 
 Before relying on a package's API, confirm its installed version:
 - PHP packages: run `composer show --direct` to list direct dependencies with versions, or `composer show <vendor/package>` for a single package.
 - JS packages: check `package.json` for the installed versions.
-
-## Skills Activation
-
-This project has domain-specific skills available in `**/skills/**`. You MUST activate the relevant skill whenever you work in that domain—don't wait until you're stuck.
 
 ## Conventions
 
@@ -95,7 +109,7 @@ This project has domain-specific skills available in `**/skills/**`. You MUST ac
 
 ## Project Rules
 
-- This project contains committed, area-grouped rules in `.ai/rules` when that directory exists (settled decisions, non-obvious traps, standing constraints). Framework and package guidelines that only apply to specific paths (testing, frontend, components) also live there, under `.ai/rules/boost` — this is not just recorded decisions, it is load-bearing guidance you have not seen inline. Before you enter plan mode or create/edit any file, you MUST first: open @.ai/rules/index.md (it maps file globs to rule files), read every rule file whose globs cover the path(s) in scope, and run `grep -rin 'keyword' .ai/rules` to catch what a path match alone misses. Do not write code until you have read and are following every matching rule. If `.ai/rules` does not exist, continue without it.
+- This project contains committed, area-grouped rules in `.ai/rules` as required repository state (settled decisions, non-obvious traps, standing constraints). Framework and package guidelines that only apply to specific paths (testing, frontend, components) also live there, under `.ai/rules/boost` — this is not just recorded decisions, it is load-bearing guidance you have not seen inline. Before you enter plan mode or create/edit any file, you MUST first: open @.ai/rules/index.md (it maps file globs to rule files), read every rule file whose globs cover the path(s) in scope, and run `grep -rin 'keyword' .ai/rules` to catch what a path match alone misses. Do not write code until you have read and are following every matching rule. `.ai/rules/index.md` and every rule file indexed by it are required repository state. If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete. Read every indexed rule whose globs match the files in scope before planning or editing. Stop and restore or regenerate the guidance before continuing.
 - Record durable rules with `record-rule` so the next agent or teammate inherits them instead of working them out again. Pass a `glob` (e.g. `app/Http/Controllers/**`), a short `title`, and a few-line `note`. Always use `record-rule`, never your native memory or notes tool — native memory is personal and session-scoped; only `.ai/rules` is shared with the team and persists in the repo.
 
 ## Artisan
@@ -127,6 +141,15 @@ This project has domain-specific skills available in `**/skills/**`. You MUST ac
 
 - Laravel can be deployed using [Laravel Cloud](https://cloud.laravel.com/), which is the fastest way to deploy and scale production Laravel applications.
 
+=== tests rules ===
+
+# Test Enforcement
+
+- Test every code change by adding or updating a test.
+- Run the affected tests and ensure they pass.
+- Test the changed behavior and its important failure modes, but do not add tests beyond them.
+- Read the `testing-best-practices` skill before writing tests.
+
 === laravel/core rules ===
 
 # Do Things the Laravel Way
@@ -135,35 +158,12 @@ This project has domain-specific skills available in `**/skills/**`. You MUST ac
 - If you're creating a generic PHP class, use `php artisan make:class`.
 - Pass `--no-interaction` to all Artisan commands to ensure they work without user input. You should also pass the correct `--options` to ensure correct behavior.
 
-### Model Creation
-
-- When creating new models, create useful factories and seeders for them too. Ask the user if they need any other things, using `php artisan make:model --help` to check the available options.
-
-## APIs & Eloquent Resources
-
-- For APIs, default to using Eloquent API Resources and API versioning unless existing API routes do not, then you should follow existing application convention.
-
 ## URL Generation
 
 - When generating links to other pages, prefer named routes and the `route()` function.
 
-## Testing
-
-- When creating models for tests, use the factories for the models. Check if the factory has custom states that can be used before manually setting up the model.
-- Faker: Use methods such as `$this->faker->word()` or `fake()->randomDigit()`. Follow existing conventions whether to use `$this->faker` or `fake()`.
-- When creating tests, make use of `php artisan make:test [options] {name}` to create a feature test, and pass `--unit` to create a unit test. Most tests should be feature tests.
-
 ## Vite Error
 
 - If you receive an "Illuminate\Foundation\ViteException: Unable to locate file in Vite manifest" error, you can run `npm run build` or ask the user to run `npm run dev` or `composer run dev`.
-
-=== pest/core rules ===
-
-## Pest
-
-- This project uses Pest for testing. Create tests: `php artisan make:test --pest {name}`.
-- The `{name}` argument should not include the test suite directory. Use `php artisan make:test --pest SomeFeatureTest` instead of `php artisan make:test --pest Feature/SomeFeatureTest`.
-- Run tests: `php artisan test --compact` or filter: `php artisan test --compact --filter=testName`.
-- Do NOT delete tests without approval.
 
 </laravel-boost-guidelines>

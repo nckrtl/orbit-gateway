@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Requests\Apps;
 
 use App\Data\Apps\CreateAppData;
+use App\Domain\SourceControl\GitRepositoryOrigin;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
@@ -16,7 +17,7 @@ final class StoreAppRequest extends FormRequest
         return [
             'name' => ['sometimes', 'string', 'max:255'],
             'slug' => ['required', 'string', 'alpha_dash:ascii', 'max:63'],
-            'repository_url' => ['required', 'string', 'max:2048', 'regex:/\A\S+\z/'],
+            'repository_url' => ['required', 'string', 'max:2048'],
             'defaults' => ['nullable', 'array'],
         ];
     }
@@ -25,15 +26,19 @@ final class StoreAppRequest extends FormRequest
     public function after(): array
     {
         return [function (Validator $validator): void {
+            if (! is_string($this->input('repository_url'))) {
+                return;
+            }
+
             $repository = $this->string('repository_url')->toString();
 
-            if (preg_match('/\A[a-z][a-z0-9+.-]*:\/\/[^\/\s]*@/i', $repository) !== 1) {
+            if ($repository === '' || GitRepositoryOrigin::isValid($repository)) {
                 return;
             }
 
             $validator->errors()->add(
                 'repository_url',
-                'The repository URL must not contain credentials.',
+                'The repository URL must be a valid HTTPS or SSH Git origin.',
             );
         }];
     }

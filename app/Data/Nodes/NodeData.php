@@ -22,10 +22,14 @@ final class NodeData extends Data
         public string $status,
         public ?string $platform,
         public ?string $architecture,
+        public ?string $tld,
         public string $publicSshHost,
         public int $publicSshPort,
         public string $sshUser,
         public ?string $wireguardAddress,
+        public ?string $wireguardPublicKey,
+        public ?string $wireguardEndpointOverride,
+        public ?string $dnsServerOverride,
         public ?string $sshHostFingerprint,
         public ?string $failedStep,
         public ?string $errorCode,
@@ -38,6 +42,14 @@ final class NodeData extends Data
         $platform = $node->getAttribute('platform');
         /** @var ?string $architecture */
         $architecture = $node->getAttribute('architecture');
+        /** @var ?string $tld */
+        $tld = $node->getAttribute('tld');
+        /** @var ?string $wireguardPublicKey */
+        $wireguardPublicKey = $node->getAttribute('wireguard_public_key');
+        /** @var ?string $wireguardEndpointOverride */
+        $wireguardEndpointOverride = $node->getAttribute('wireguard_endpoint_override');
+        /** @var ?string $dnsServerOverride */
+        $dnsServerOverride = $node->getAttribute('dns_server_override');
         /** @var ?string $sshHostFingerprint */
         $sshHostFingerprint = $node->getAttribute('ssh_host_fingerprint');
         /** @var ?string $failedStep */
@@ -51,10 +63,14 @@ final class NodeData extends Data
             status: $node->status->value,
             platform: $platform,
             architecture: $architecture,
+            tld: $tld,
             publicSshHost: $node->public_ssh_host,
             publicSshPort: $node->public_ssh_port,
             sshUser: $node->ssh_user,
             wireguardAddress: $node->wireguard_address,
+            wireguardPublicKey: $wireguardPublicKey,
+            wireguardEndpointOverride: $wireguardEndpointOverride,
+            dnsServerOverride: $dnsServerOverride,
             sshHostFingerprint: $sshHostFingerprint,
             failedStep: $failedStep,
             errorCode: $errorCode,

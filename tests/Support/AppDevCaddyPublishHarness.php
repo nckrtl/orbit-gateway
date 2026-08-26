@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Tests\Support;
 
 use App\Infrastructure\AppDev\AppDevCaddyPublisher;
+use App\Infrastructure\AppProd\AppProdCaddyPublisher;
 use Illuminate\Filesystem\Filesystem;
 use Symfony\Component\Process\Process;
 
+/** @mago-expect lint:cyclomatic-complexity The harness models independent filesystem and service failure states. */
 final class AppDevCaddyPublishHarness
 {
     private string $root;
@@ -31,8 +33,10 @@ final class AppDevCaddyPublishHarness
         return $path.'/'.$suffix;
     }
 
-    public function run(AppDevCaddyPublisher $publisher, AppDevCaddyPublishScenario $scenario): AppDevCaddyPublishResult
-    {
+    public function run(
+        AppDevCaddyPublisher|AppProdCaddyPublisher $publisher,
+        AppDevCaddyPublishScenario $scenario,
+    ): AppDevCaddyPublishResult {
         $this->resetFilesystem();
 
         $liveMainPath = $this->etcCaddyPath('Caddyfile');
@@ -46,11 +50,20 @@ final class AppDevCaddyPublishHarness
             'HARNESS_PACKAGE_DEFAULT_MD5' => $scenario->packageDefault === null ? '' : md5($scenario->packageDefault),
             'HARNESS_VALIDATE_LOG' => $this->root.'/validate.log',
             'HARNESS_FAIL_VALIDATION' => $scenario->failValidation ? '1' : '0',
+            'HARNESS_SERVICE_LOG' => $this->root.'/systemctl.log',
+            'HARNESS_ACTIVATION_MARKER' => $this->root.'/activation-failed',
+            'HARNESS_FAIL_ACTIVATION' => $scenario->failActivation ? '1' : '0',
         ]);
         $process->setInput($command->input);
         $process->run();
 
         $liveMainAfter = file_get_contents($liveMainPath);
+        $liveLinkTargetAfter = null;
+
+        if (is_link($liveMainPath)) {
+            $liveLinkTarget = readlink($liveMainPath);
+            $liveLinkTargetAfter = is_string($liveLinkTarget) ? $liveLinkTarget : null;
+        }
 
         return new AppDevCaddyPublishResult(
             exitCode: $process->getExitCode() ?? 1,
@@ -58,6 +71,8 @@ final class AppDevCaddyPublishHarness
             stderr: $process->getErrorOutput(),
             liveMainAfter: $liveMainAfter === false ? '' : $liveMainAfter,
             publishedFragments: $this->publishedFragments($versionsDirectory.'/test-version/fragments'),
+            liveLinkTargetAfter: $liveLinkTargetAfter,
+            serviceCalls: $this->serviceCalls(),
         );
     }
 
@@ -178,7 +193,23 @@ final class AppDevCaddyPublishHarness
                 exit 0
                 BASH,
         );
-        file_put_contents(filename: $this->root.'/bin/systemctl', data: "#!/usr/bin/env bash\nexit 0\n");
+        file_put_contents(
+            filename: $this->root.'/bin/systemctl',
+            data: <<<'BASH'
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\n' "$*" >> "${HARNESS_SERVICE_LOG}"
+
+                if [ "${HARNESS_FAIL_ACTIVATION}" = 1 ] \
+                    && [ "$1" = reload-or-restart ] \
+                    && [ ! -e "${HARNESS_ACTIVATION_MARKER}" ]; then
+                    touch "${HARNESS_ACTIVATION_MARKER}"
+                    exit 1
+                fi
+
+                exit 0
+                BASH,
+        );
         file_put_contents(filename: $this->root.'/bin/chown', data: "#!/usr/bin/env bash\nexit 0\n");
 
         chmod($this->root.'/bin/sudo', permissions: 0o755);
@@ -203,5 +234,21 @@ final class AppDevCaddyPublishHarness
                 return [$file->getFilename() => $contents === false ? '' : $contents];
             })
             ->all();
+    }
+
+    /** @return list<string> */
+    private function serviceCalls(): array
+    {
+        if (! is_file($this->root.'/systemctl.log')) {
+            return [];
+        }
+
+        $contents = file_get_contents($this->root.'/systemctl.log');
+
+        if ($contents === false) {
+            return [];
+        }
+
+        return array_values(array_filter(explode("\n", trim($contents))));
     }
 }

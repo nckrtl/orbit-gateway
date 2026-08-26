@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace App\Http\Requests\Nodes;
 
 use App\Data\Nodes\ProvisionNodeData;
+use App\Domain\Nodes\NodeTld;
 use App\Domain\Nodes\RoleName;
+use App\Domain\WireGuard\WireGuardEndpoint;
+use Closure;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use JsonException;
@@ -13,6 +16,18 @@ use JsonException;
 /** @mago-expect lint:cyclomatic-complexity This request keeps transport normalization and typed payload mapping at one boundary. */
 final class ProvisionNodeRequest extends FormRequest
 {
+    protected function prepareForValidation(): void
+    {
+        /** @mago-expect analysis:mixed-assignment Request input is an untyped boundary. */
+        $tld = $this->input('tld');
+
+        if (! is_string($tld)) {
+            return;
+        }
+
+        $this->merge(['tld' => NodeTld::normalize($tld)]);
+    }
+
     /**
      * Preserve explicit blank peer addresses so the allocator can reject them.
      *
@@ -46,14 +61,31 @@ final class ProvisionNodeRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'alpha_dash:ascii', 'max:63'],
-            'public_ssh_host' => ['required', 'string', 'max:255'],
+            'public_ssh_host' => ['required_unless:platform,darwin', 'string', 'max:255'],
+            'platform' => ['sometimes', 'string', Rule::in(['linux', 'darwin'])],
+            'architecture' => ['nullable', 'string', 'regex:/\A[A-Za-z0-9_.-]{1,64}\z/D'],
+            'tld' => [
+                'nullable',
+                'string',
+                'max:253',
+                'regex:/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\z/D',
+            ],
             'public_ssh_port' => ['sometimes', 'integer', 'between:1,65535'],
             'ssh_user' => ['sometimes', 'string', 'max:32'],
             'roles' => ['sometimes', 'array'],
             'roles.*' => ['required', Rule::enum(RoleName::class)],
             // The allocator owns format, family, subnet, and uniqueness errors.
             'wireguard_address' => ['nullable'],
-            'wireguard_endpoint_override' => ['nullable', 'string', 'max:255'],
+            'wireguard_endpoint_override' => [
+                'nullable',
+                'string',
+                'max:255',
+                static function (string $attribute, mixed $value, Closure $fail): void {
+                    if (! is_string($value) || ! WireGuardEndpoint::isValid($value)) {
+                        $fail("The {$attribute} field must be a valid WireGuard endpoint.");
+                    }
+                },
+            ],
             'dns_server_override' => ['nullable', 'ip'],
             'host_key_fingerprint' => [
                 'nullable',
@@ -71,7 +103,7 @@ final class ProvisionNodeRequest extends FormRequest
 
         return new ProvisionNodeData(
             name: (string) $validated['name'],
-            publicSshHost: (string) $validated['public_ssh_host'],
+            publicSshHost: is_string($validated['public_ssh_host'] ?? null) ? $validated['public_ssh_host'] : '',
             roles: array_values(array_map(
                 RoleName::from(...),
                 $roles,
@@ -88,6 +120,9 @@ final class ProvisionNodeRequest extends FormRequest
             expectedSshHostFingerprint: is_string($validated['host_key_fingerprint'] ?? null)
                 ? $validated['host_key_fingerprint']
                 : null,
+            platform: is_string($validated['platform'] ?? null) ? $validated['platform'] : 'linux',
+            architecture: is_string($validated['architecture'] ?? null) ? $validated['architecture'] : null,
+            tld: is_string($validated['tld'] ?? null) ? $validated['tld'] : null,
         );
     }
 

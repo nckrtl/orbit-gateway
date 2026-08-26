@@ -8,14 +8,21 @@ use App\Domain\AppDev\AppDevSourceOperationLock;
 use Closure;
 use RuntimeException;
 
-final readonly class NativeAppDevSourceOperationLock implements AppDevSourceOperationLock
+final class NativeAppDevSourceOperationLock implements AppDevSourceOperationLock
 {
+    /** @var array<int, true> */
+    private array $heldNodes = [];
+
     public function __construct(
-        private string $directory,
+        private readonly string $directory,
     ) {}
 
     public function synchronized(int $nodeId, Closure $operation): mixed
     {
+        if (array_key_exists($nodeId, $this->heldNodes)) {
+            return $operation();
+        }
+
         if (
             ! is_dir($this->directory)
             && ! mkdir(directory: $this->directory, permissions: 0o700, recursive: true)
@@ -39,8 +46,11 @@ final readonly class NativeAppDevSourceOperationLock implements AppDevSourceOper
                 throw new RuntimeException("Could not acquire source lock [{$path}].");
             }
 
+            $this->heldNodes[$nodeId] = true;
+
             return $operation();
         } finally {
+            unset($this->heldNodes[$nodeId]);
             flock($handle, LOCK_UN);
             fclose($handle);
         }

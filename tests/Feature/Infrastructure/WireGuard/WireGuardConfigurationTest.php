@@ -5,8 +5,7 @@ declare(strict_types=1);
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Settings\SettingRepository;
-use App\Domain\Settings\SettingScope;
-use App\Domain\Settings\SettingScopeType;
+use App\Domain\WireGuard\VpnSettings;
 use App\Infrastructure\WireGuard\VpnConfigurationRepository;
 use App\Infrastructure\WireGuard\WireGuardServerConfigRenderer;
 use App\Models\Node;
@@ -35,11 +34,8 @@ it('resolves peer overrides and renders the complete server peer set', function 
             'wireguard_endpoint_override' => '10.0.0.2:51820',
             'dns_server_override' => '10.0.0.2',
         ]);
-        $settings = app(SettingRepository::class);
-        $scope = new SettingScope(SettingScopeType::Gateway);
-        $settings->put($scope, 'vpn.subnet', '10.44.0.0/24');
-        $settings->put($scope, 'vpn.port', '51820');
-        $settings->put($scope, 'vpn.domain', 'test');
+        $settings = new VpnSettings(app(SettingRepository::class));
+        $settings->configure(subnet: '10.44.0.0/24', domain: 'test');
         $configuration = new VpnConfigurationRepository($settings, $orbitHome);
 
         $vpn = $configuration->forPeer($peer);
@@ -66,7 +62,7 @@ it('resolves peer overrides and renders the complete server peer set', function 
     }
 });
 
-it('rejects unsafe DNS and domain values before rendering peer shell hooks', function (): void {
+it('rejects unsafe endpoint, DNS, and domain values before rendering peer shell hooks', function (): void {
     $orbitHome = sys_get_temp_dir().'/orbit-vpn-'.Str::uuid();
     mkdir(directory: $orbitHome.'/wireguard', permissions: 0o700, recursive: true);
     file_put_contents(filename: $orbitHome.'/wireguard/private.key', data: 'SERVER_PRIVATE');
@@ -86,12 +82,18 @@ it('rejects unsafe DNS and domain values before rendering peer shell hooks', fun
             'wireguard_address' => '10.44.0.2',
             'dns_server_override' => '10.0.0.2; touch /tmp/orbit-injected',
         ]);
-        $settings = app(SettingRepository::class);
-        $scope = new SettingScope(SettingScopeType::Gateway);
-        $settings->put($scope, 'vpn.subnet', '10.44.0.0/24');
-        $settings->put($scope, 'vpn.port', '51820');
-        $settings->put($scope, 'vpn.domain', 'orbit');
+        $settings = new VpnSettings(app(SettingRepository::class));
+        $settings->configure(subnet: '10.44.0.0/24');
         $configuration = new VpnConfigurationRepository($settings, $orbitHome);
+
+        $peer->update([
+            'wireguard_endpoint_override' => "10.0.0.2:51820\nPostUp = touch /tmp/orbit-injected",
+        ]);
+
+        expect(fn () => $configuration->forPeer($peer))
+            ->toThrow(NodeProvisioningException::class, 'The WireGuard endpoint is invalid.');
+
+        $peer->update(['wireguard_endpoint_override' => null]);
 
         expect(fn () => $configuration->forPeer($peer))
             ->toThrow(NodeProvisioningException::class, 'The DNS server is invalid.');
@@ -102,7 +104,7 @@ it('rejects unsafe DNS and domain values before rendering peer shell hooks', fun
             ->toBeTrue();
 
         $peer->update(['dns_server_override' => '10.0.0.2']);
-        $settings->put($scope, 'vpn.domain', 'orbit; touch /tmp/orbit-injected');
+        $settings->configure(subnet: '10.44.0.0/24', domain: 'orbit; touch /tmp/orbit-injected');
 
         expect(fn () => $configuration->forPeer($peer))
             ->toThrow(NodeProvisioningException::class, 'The private DNS domain is invalid.');

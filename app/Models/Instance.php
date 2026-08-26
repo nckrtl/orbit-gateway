@@ -33,6 +33,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 final class Instance extends Model
 {
     /** @var array<string, mixed> */
+    #[\Override]
     protected $attributes = [
         'document_root' => 'public',
         'php_version' => '8.5',
@@ -40,6 +41,7 @@ final class Instance extends Model
     ];
 
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = [
         'app_id',
         'node_id',

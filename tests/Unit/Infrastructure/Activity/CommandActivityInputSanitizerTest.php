@@ -67,6 +67,44 @@ it('redacts secret assignments and authorization credentials from text', functio
         ->toBe('secretary=active token_count=3 status=ok');
 });
 
+it('redacts only recognized secret query parameters in arbitrary text', function (
+    string $url,
+    string $expectedUrl,
+): void {
+    $sanitizer = new CommandActivityInputSanitizer;
+    $sanitized = $sanitizer->sanitize([
+        'url' => $url,
+        'message' => "Clone failed for {$url}",
+        'error' => "Could not fetch {$url}",
+    ]);
+    $debugOutput = print_r($sanitized, return: true);
+
+    expect($sanitized)
+        ->toBe([
+            'url' => $expectedUrl,
+            'message' => "Clone failed for {$expectedUrl}",
+            'error' => "Could not fetch {$expectedUrl}",
+        ])
+        ->and($debugOutput)
+        ->not
+        ->toContain('sentinel')
+        ->and($sanitizer->redactText('https://example.test/repo.git?branch=main&token_count=3'))
+        ->toBe('https://example.test/repo.git?branch=main&token_count=3');
+})->with([
+    'token' => [
+        'https://example.test/repo.git?token=sentinel&branch=main',
+        'https://example.test/repo.git?token=[REDACTED]&branch=main',
+    ],
+    'api key' => [
+        'error: https://example.test/repo.git?api_key=sentinel&branch=main',
+        'error: https://example.test/repo.git?api_key=[REDACTED]&branch=main',
+    ],
+    'access token' => [
+        'https://example.test/repo.git?branch=main&access_token=sentinel&depth=1',
+        'https://example.test/repo.git?branch=main&access_token=[REDACTED]&depth=1',
+    ],
+]);
+
 it('redacts complete PEM blocks without storing private material', function (): void {
     $sanitizer = new CommandActivityInputSanitizer;
     $label = 'PRIVATE KEY';
@@ -79,4 +117,53 @@ it('redacts complete PEM blocks without storing private material', function (): 
         ->toContain($body)
         ->and($sanitizer->redactText('The BEGIN of the ceremony was delayed until END of day'))
         ->toBe('The BEGIN of the ceremony was delayed until END of day');
+});
+
+it('redacts every value in process environment maps regardless of variable name', function (): void {
+    $sanitizer = new CommandActivityInputSanitizer;
+
+    expect($sanitizer->sanitize([
+        'runtime_config' => [
+            'environment' => [
+                'APP_ENV' => 'production',
+                'DATABASE_URL' => 'postgres://operator:secret@example.test/orbit',
+                'CUSTOM_NAME' => 'private-value',
+            ],
+        ],
+        'environment' => 'production',
+    ]))->toBe([
+        'runtime_config' => [
+            'environment' => [
+                'APP_ENV' => '[REDACTED]',
+                'DATABASE_URL' => '[REDACTED]',
+                'CUSTOM_NAME' => '[REDACTED]',
+            ],
+        ],
+        'environment' => 'production',
+    ]);
+});
+
+it('replaces invalid process environment names while retaining valid names', function (): void {
+    $sanitizer = new CommandActivityInputSanitizer;
+    $sentinel = 'sentinel-invalid-environment-key';
+    $sanitized = $sanitizer->sanitize([
+        'environment' => [
+            'APP_ENV' => 'production',
+            "BAD\n{$sentinel}" => 'private-value',
+            0 => 'numeric-value',
+        ],
+    ]);
+    $debugOutput = print_r($sanitized, return: true);
+
+    expect($sanitized)
+        ->toBe([
+            'environment' => [
+                'APP_ENV' => '[REDACTED]',
+                '[INVALID_ENVIRONMENT_NAME]' => '[REDACTED]',
+            ],
+        ])
+        ->and($debugOutput)
+        ->not->toContain($sentinel)
+        ->not->toContain('private-value')
+        ->not->toContain('numeric-value');
 });

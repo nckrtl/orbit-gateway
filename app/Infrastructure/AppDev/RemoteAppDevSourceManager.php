@@ -7,6 +7,7 @@ namespace App\Infrastructure\AppDev;
 use App\Domain\AppDev\AppDevSourceManager;
 use App\Domain\AppDev\AppDevSourceOperationLock;
 use App\Domain\AppDev\RuntimeConvergenceException;
+use App\Domain\SourceControl\GitRepositoryOrigin;
 use App\Infrastructure\Ssh\RemoteCommand;
 use App\Models\Instance;
 use App\Models\Workspace;
@@ -21,8 +22,9 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
     public function convergeInstance(Instance $instance): void
     {
         $instance->loadMissing(['app', 'node']);
+        $repository = GitRepositoryOrigin::validate($instance->app->repository_url);
         $this->guardInstancePath($instance);
-        $this->lock->synchronized($instance->node_id, function () use ($instance): void {
+        $this->lock->synchronized($instance->node_id, function () use ($instance, $repository): void {
             $this->ssh->execute(
                 $instance->node,
                 new RemoteCommand(
@@ -30,7 +32,7 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
                         'bash',
                         '-seu',
                         '--',
-                        $instance->app->repository_url,
+                        $repository,
                         $instance->checkout_path,
                         $instance->document_root,
                     ],
@@ -156,14 +158,22 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
     public function removeInstance(Instance $instance): void
     {
         $instance->loadMissing(['app', 'node']);
+        $repository = GitRepositoryOrigin::validate($instance->app->repository_url);
         $this->guardInstancePath($instance);
-        $this->lock->synchronized($instance->node_id, function () use ($instance): void {
+        $this->lock->synchronized($instance->node_id, function () use ($instance, $repository): void {
             $this->ssh->execute(
                 $instance->node,
                 new RemoteCommand(
-                    arguments: ['bash', '-seu', '--', $instance->checkout_path],
+                    arguments: [
+                        'bash',
+                        '-seu',
+                        '--',
+                        $repository,
+                        $instance->checkout_path,
+                    ],
                     input: <<<'BASH'
-                        checkout=$1
+                        repository=$1
+                        checkout=$2
                         parent=$(dirname "$checkout")
 
                         test ! -L "$parent"
@@ -178,6 +188,7 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
 
                         test ! -L "$checkout"
                         test "$(realpath -e "$checkout")" = "$(git -C "$checkout" rev-parse --show-toplevel)"
+                        test "$(git -C "$checkout" remote get-url origin)" = "$repository"
                         rm -rf -- "$checkout"
                         BASH,
                 ),
@@ -189,8 +200,9 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
 
     public function convergeWorkspace(Workspace $workspace): void
     {
-        $workspace->loadMissing('instance.node');
-        $this->lock->synchronized($workspace->instance->node_id, function () use ($workspace): void {
+        $workspace->loadMissing(['instance.app', 'instance.node']);
+        $repository = GitRepositoryOrigin::validate($workspace->instance->app->repository_url);
+        $this->lock->synchronized($workspace->instance->node_id, function () use ($repository, $workspace): void {
             $traversalPaths = $this->workspaceTraversalPaths($workspace);
             $this->ssh->execute(
                 $workspace->instance->node,
@@ -200,6 +212,7 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
                         '-seu',
                         '--',
                         $workspace->instance->checkout_path,
+                        $repository,
                         $workspace->checkout_path,
                         $workspace->branch,
                         $workspace->instance->document_root,
@@ -207,10 +220,11 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
                     ],
                     input: <<<'BASH'
                         instance=$1
-                        checkout=$2
-                        branch=$3
-                        document_root=$4
-                        shift 4
+                        repository=$2
+                        checkout=$3
+                        branch=$4
+                        document_root=$5
+                        shift 5
                         traversal_paths=("$@")
                         guard_checkout_parent() {
                             parent=$(dirname "$1")
@@ -397,9 +411,10 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
                             fi
                         }
                         guard_workspace_path
-                        prepare_traversal_paths
                         test ! -L "$instance"
                         test "$(realpath -e "$instance")" = "$(git -C "$instance" rev-parse --show-toplevel)"
+                        test "$(git -C "$instance" remote get-url origin)" = "$repository"
+                        prepare_traversal_paths
 
                         if git -C "$instance" worktree list --porcelain | grep -Fx -- "worktree $checkout" >/dev/null; then
                             test -d "$checkout"
@@ -431,126 +446,132 @@ final readonly class RemoteAppDevSourceManager implements AppDevSourceManager
 
     public function removeWorkspace(Workspace $workspace): void
     {
-        $workspace->loadMissing('instance.node');
-        $this->guardWorkspacePath($workspace);
-        $releasePaths = $this->releasableWorkspaceTraversalPaths($workspace);
-        $this->ssh->execute(
-            $workspace->instance->node,
-            new RemoteCommand(
-                arguments: [
-                    'bash',
-                    '-seu',
-                    '--',
-                    $workspace->instance->checkout_path,
-                    $workspace->checkout_path,
-                    ...$releasePaths,
-                ],
-                input: <<<'BASH'
-                        instance=$1
-                        checkout=$2
-                        shift 2
-                        release_paths=("$@")
-                        marker_name=user.orbit.caddy_traversal
-                    parent=$(dirname "$checkout")
-                    case "$parent" in
-                        /home/orbit|/home/orbit/*) ;;
-                        *) exit 1 ;;
-                    esac
-                    if [ -e "$parent" ] || [ -L "$parent" ]; then
-                        test -d "$parent"
-                        test ! -L "$parent"
-                        case "$(realpath -e "$parent")" in
+        $workspace->loadMissing(['instance.app', 'instance.node']);
+        $repository = GitRepositoryOrigin::validate($workspace->instance->app->repository_url);
+        $this->lock->synchronized($workspace->instance->node_id, function () use ($repository, $workspace): void {
+            $this->guardWorkspacePath($workspace);
+            $releasePaths = $this->releasableWorkspaceTraversalPaths($workspace);
+            $this->ssh->execute(
+                $workspace->instance->node,
+                new RemoteCommand(
+                    arguments: [
+                        'bash',
+                        '-seu',
+                        '--',
+                        $workspace->instance->checkout_path,
+                        $repository,
+                        $workspace->checkout_path,
+                        ...$releasePaths,
+                    ],
+                    input: <<<'BASH'
+                            instance=$1
+                            repository=$2
+                            checkout=$3
+                            shift 3
+                            release_paths=("$@")
+                            marker_name=user.orbit.caddy_traversal
+                        parent=$(dirname "$checkout")
+                        case "$parent" in
                             /home/orbit|/home/orbit/*) ;;
                             *) exit 1 ;;
                         esac
-                    fi
-                    test ! -L "$instance"
-                    test "$(realpath -e "$instance")" = "$(git -C "$instance" rev-parse --show-toplevel)"
-
-                    if ! git -C "$instance" worktree list --porcelain | grep -Fx -- "worktree $checkout" >/dev/null; then
-                        test ! -e "$checkout"
-                    else
-                        git -C "$instance" worktree remove --force -- "$checkout"
-                    fi
-
-                    for path in "${release_paths[@]}"; do
-                        case "$path" in
-                            /home/orbit/*) ;;
-                            *) exit 1 ;;
+                        if [ -e "$parent" ] || [ -L "$parent" ]; then
+                            test -d "$parent"
+                            test ! -L "$parent"
+                            case "$(realpath -e "$parent")" in
+                                /home/orbit|/home/orbit/*) ;;
+                                *) exit 1 ;;
                             esac
-                            state_directory=/home/orbit/.orbit/caddy-traversal-state
-                            state_key=$(printf '%s' "$path" | sha256sum | cut -d' ' -f1)
-                            state="$state_directory/$state_key"
-                            if [ ! -e "$state" ] && [ ! -L "$state" ]; then
-                                if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+                        fi
+                        test ! -L "$instance"
+                        test "$(realpath -e "$instance")" = "$(git -C "$instance" rev-parse --show-toplevel)"
+                        test "$(git -C "$instance" remote get-url origin)" = "$repository"
+
+                        if ! git -C "$instance" worktree list --porcelain | grep -Fx -- "worktree $checkout" >/dev/null; then
+                            test ! -e "$checkout"
+                        else
+                            git -C "$instance" worktree remove --force -- "$checkout"
+                        fi
+
+                        for path in "${release_paths[@]}"; do
+                            case "$path" in
+                                /home/orbit/*) ;;
+                                *) exit 1 ;;
+                                esac
+                                state_directory=/home/orbit/.orbit/caddy-traversal-state
+                                state_key=$(printf '%s' "$path" | sha256sum | cut -d' ' -f1)
+                                state="$state_directory/$state_key"
+                                if [ ! -e "$state" ] && [ ! -L "$state" ]; then
+                                    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+                                        continue
+                                    fi
+
+                                    test -d "$path"
+                                    test ! -L "$path"
+                                    test "$(realpath -e "$path")" = "$path"
+                                    if getfattr --only-values -n "$marker_name" -- "$path" >/dev/null 2>&1; then
+                                        if getfacl -cp "$path" | grep -Eq '^user:caddy:--x$' \
+                                            && getfacl -cp "$path" | grep -Eq '^mask::[r-][w-]x$'; then
+                                            exit 1
+                                        fi
+                                        setfattr -x "$marker_name" -- "$path"
+                                    fi
                                     continue
                                 fi
 
-                                test -d "$path"
-                                test ! -L "$path"
-                                test "$(realpath -e "$path")" = "$path"
-                                if getfattr --only-values -n "$marker_name" -- "$path" >/dev/null 2>&1; then
-                                    if getfacl -cp "$path" | grep -Eq '^user:caddy:--x$' \
-                                        && getfacl -cp "$path" | grep -Eq '^mask::[r-][w-]x$'; then
-                                        exit 1
-                                    fi
-                                    setfattr -x "$marker_name" -- "$path"
+                                if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+                                    test -d "$state_directory"
+                                    test ! -L "$state_directory"
+                                    test "$(realpath -e "$state_directory")" = "$state_directory"
+                                    test -f "$state"
+                                    test ! -L "$state"
+                                    test "$(stat -c '%a' "$state")" = 600
+                                    test "$(sed -n '1p' "$state")" = "$path"
+                                    state_nonce=$(sed -n '3p' "$state")
+                                    printf '%s\n' "$state_nonce" | grep -Eq '^[0-9a-f]{64}$'
+                                    rm -f -- "$state"
+                                    continue
                                 fi
-                                continue
-                            fi
-
-                            if [ ! -e "$path" ] && [ ! -L "$path" ]; then
                                 test -d "$state_directory"
                                 test ! -L "$state_directory"
                                 test "$(realpath -e "$state_directory")" = "$state_directory"
-                                test -f "$state"
-                                test ! -L "$state"
-                                test "$(stat -c '%a' "$state")" = 600
-                                test "$(sed -n '1p' "$state")" = "$path"
-                                state_nonce=$(sed -n '3p' "$state")
-                                printf '%s\n' "$state_nonce" | grep -Eq '^[0-9a-f]{64}$'
+                                test -d "$path"
+                            test ! -L "$path"
+                            test "$(realpath -e "$path")" = "$path"
+                            test -f "$state"
+                            test ! -L "$state"
+                            test "$(stat -c '%a' "$state")" = 600
+                            test "$(sed -n '1p' "$state")" = "$path"
+                            state_identity=$(sed -n '2p' "$state")
+                            printf '%s\n' "$state_identity" | grep -Eq '^[0-9]+:[0-9]+$'
+                            test "$state_identity" = "$(stat -c '%d:%i' "$path")"
+                            state_nonce=$(sed -n '3p' "$state")
+                            printf '%s\n' "$state_nonce" | grep -Eq '^[0-9a-f]{64}$'
+                            tail -n +4 "$state" | setfacl --test --set-file=- "$path" >/dev/null
+                            if current_nonce=$(getfattr --only-values -n "$marker_name" -- "$path" 2>/dev/null); then
+                                test "$current_nonce" = "$state_nonce"
+                            elif cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d'); then
                                 rm -f -- "$state"
                                 continue
+                            else
+                                exit 1
                             fi
-                            test -d "$state_directory"
-                            test ! -L "$state_directory"
-                            test "$(realpath -e "$state_directory")" = "$state_directory"
-                            test -d "$path"
-                        test ! -L "$path"
-                        test "$(realpath -e "$path")" = "$path"
-                        test -f "$state"
-                        test ! -L "$state"
-                        test "$(stat -c '%a' "$state")" = 600
-                        test "$(sed -n '1p' "$state")" = "$path"
-                        state_identity=$(sed -n '2p' "$state")
-                        printf '%s\n' "$state_identity" | grep -Eq '^[0-9]+:[0-9]+$'
-                        test "$state_identity" = "$(stat -c '%d:%i' "$path")"
-                        state_nonce=$(sed -n '3p' "$state")
-                        printf '%s\n' "$state_nonce" | grep -Eq '^[0-9a-f]{64}$'
-                        tail -n +4 "$state" | setfacl --test --set-file=- "$path" >/dev/null
-                        if current_nonce=$(getfattr --only-values -n "$marker_name" -- "$path" 2>/dev/null); then
-                            test "$current_nonce" = "$state_nonce"
-                        elif cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d'); then
-                            rm -f -- "$state"
-                            continue
-                        else
-                            exit 1
-                        fi
 
-                        if ! cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d'); then
-                            getfacl -cp "$path" | grep -Eq '^user:caddy:--x$'
-                            getfacl -cp "$path" | grep -Eq '^mask::[r-][w-]x$'
-                            tail -n +4 "$state" | setfacl --set-file=- "$path"
-                            cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d')
-                        fi
-                        setfattr -x "$marker_name" -- "$path"
-                        rm -f -- "$state"
-                    done
-                    BASH,
-            ),
-            step: 'workspace-source-remove',
-            errorCode: 'workspace.remove_failed',
-        );
+                            if ! cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d'); then
+                                getfacl -cp "$path" | grep -Eq '^user:caddy:--x$'
+                                getfacl -cp "$path" | grep -Eq '^mask::[r-][w-]x$'
+                                tail -n +4 "$state" | setfacl --set-file=- "$path"
+                                cmp -s <(tail -n +4 "$state") <(getfacl -cp "$path" | sed '/^default:/d')
+                            fi
+                            setfattr -x "$marker_name" -- "$path"
+                            rm -f -- "$state"
+                        done
+                        BASH,
+                ),
+                step: 'workspace-source-remove',
+                errorCode: 'workspace.remove_failed',
+            );
+        });
     }
 
     private function guardInstancePath(Instance $instance): void

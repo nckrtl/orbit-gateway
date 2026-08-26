@@ -6,16 +6,15 @@ namespace App\Infrastructure\WireGuard;
 
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\RoleName;
-use App\Domain\Settings\SettingRepository;
-use App\Domain\Settings\SettingScope;
-use App\Domain\Settings\SettingScopeType;
+use App\Domain\WireGuard\VpnSettings;
+use App\Domain\WireGuard\WireGuardEndpoint;
 use App\Models\Node;
 
 /** @mago-expect lint:cyclomatic-complexity */
 final readonly class VpnConfigurationRepository
 {
     public function __construct(
-        private SettingRepository $settings,
+        private VpnSettings $settings,
         private string $orbitHome,
     ) {}
 
@@ -33,10 +32,9 @@ final readonly class VpnConfigurationRepository
             throw $this->invalid("Node [{$peer->name}] has no WireGuard address.");
         }
 
-        $scope = new SettingScope(SettingScopeType::Gateway);
-        $subnet = $this->settings->get($scope, 'vpn.subnet') ?? '10.44.0.0/24';
+        $subnet = $this->settings->subnet();
         $prefixLength = $this->prefixLength($subnet);
-        $port = filter_var($this->settings->get($scope, 'vpn.port') ?? '51820', FILTER_VALIDATE_INT);
+        $port = filter_var($this->settings->port(), FILTER_VALIDATE_INT);
 
         if (! is_int($port) || $port < 1 || $port > 65_535) {
             throw $this->invalid('The WireGuard port is invalid.');
@@ -47,16 +45,15 @@ final readonly class VpnConfigurationRepository
         $serverAddress = $server->wireguard_address;
         $peerAddress = $peer->wireguard_address;
         $endpoint =
-            $peer->wireguard_endpoint_override ?? $this->settings->get($scope, 'vpn.endpoint')
-                ?? "{$server->public_ssh_host}:{$port}";
-        $dnsServer = $peer->dns_server_override ?? $this->settings->get($scope, 'vpn.dns_server') ?? $serverAddress;
-        $domain = $this->settings->get($scope, 'vpn.domain') ?? 'orbit';
+            $peer->wireguard_endpoint_override ?? $this->settings->endpoint() ?? "{$server->public_ssh_host}:{$port}";
+        $dnsServer = $peer->dns_server_override ?? $this->settings->dnsServer() ?? $serverAddress;
+        $domain = $this->settings->domain();
 
-        if ($endpoint === '') {
+        if (! WireGuardEndpoint::isValid($endpoint)) {
             throw $this->invalid('The WireGuard endpoint is invalid.');
         }
 
-        if (! is_string($dnsServer) || filter_var($dnsServer, FILTER_VALIDATE_IP) === false) {
+        if (filter_var($dnsServer, FILTER_VALIDATE_IP) === false) {
             throw $this->invalid('The DNS server is invalid.');
         }
 

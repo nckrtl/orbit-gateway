@@ -17,7 +17,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 final class App extends Model
 {
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = ['name', 'slug', 'repository_url', 'defaults'];
+
+    /** @var array<array-key, string> */
+    #[\Override]
+    protected $hidden = ['defaults'];
 
     /** @return HasMany<Instance, $this> */
     public function instances(): HasMany

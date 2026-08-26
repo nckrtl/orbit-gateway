@@ -13,7 +13,7 @@ describe(SettingRepository::class, function (): void {
         $repository = app(SettingRepository::class);
         $scope = new SettingScope(SettingScopeType::Gateway);
 
-        $repository->put($scope, 'vpn.subnet', '10.44.0.0/24');
+        $repository->put($scope, 'example.plain', 'plain');
         $repository->put(
             $scope,
             'ca.private_key',
@@ -21,8 +21,8 @@ describe(SettingRepository::class, function (): void {
             protection: SettingValueProtection::Secret,
         );
 
-        expect($repository->get($scope, 'vpn.subnet'))
-            ->toBe('10.44.0.0/24')
+        expect($repository->get($scope, 'example.plain'))
+            ->toBe('plain')
             ->and($repository->get($scope, 'ca.private_key'))
             ->toBe('private')
             ->and(Setting::query()->where('key', 'ca.private_key')->value('value'))

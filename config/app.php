@@ -14,9 +14,9 @@ return [
      |
      */
 
-    'name' => env('APP_NAME', 'Orbit Gateway'),
+    'name' => env(key: 'APP_NAME', default: 'Orbit Gateway'),
 
-    'version' => env('APP_VERSION', 'dev'),
+    'version' => env(key: 'APP_VERSION', default: 'dev'),
 
     /*
      |--------------------------------------------------------------------------
@@ -29,7 +29,7 @@ return [
      |
      */
 
-    'env' => env('APP_ENV', 'production'),
+    'env' => env(key: 'APP_ENV', default: 'production'),
 
     /*
      |--------------------------------------------------------------------------
@@ -42,7 +42,7 @@ return [
      |
      */
 
-    'debug' => (bool) env('APP_DEBUG', false),
+    'debug' => (bool) env(key: 'APP_DEBUG', default: false),
 
     /*
      |--------------------------------------------------------------------------
@@ -55,7 +55,7 @@ return [
      |
      */
 
-    'url' => env('APP_URL', 'http://localhost'),
+    'url' => env(key: 'APP_URL', default: 'http://localhost'),
 
     /*
      |--------------------------------------------------------------------------
@@ -81,11 +81,11 @@ return [
      |
      */
 
-    'locale' => env('APP_LOCALE', 'en'),
+    'locale' => env(key: 'APP_LOCALE', default: 'en'),
 
-    'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
+    'fallback_locale' => env(key: 'APP_FALLBACK_LOCALE', default: 'en'),
 
-    'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),
+    'faker_locale' => env(key: 'APP_FAKER_LOCALE', default: 'en_US'),
 
     /*
      |--------------------------------------------------------------------------
@@ -104,7 +104,7 @@ return [
 
     'previous_keys' => [
         ...array_filter(
-            explode(',', (string) env('APP_PREVIOUS_KEYS', '')),
+            explode(',', (string) env(key: 'APP_PREVIOUS_KEYS', default: '')),
         ),
     ],
 
@@ -122,7 +122,7 @@ return [
      */
 
     'maintenance' => [
-        'driver' => env('APP_MAINTENANCE_DRIVER', 'file'),
-        'store' => env('APP_MAINTENANCE_STORE', 'database'),
+        'driver' => env(key: 'APP_MAINTENANCE_DRIVER', default: 'file'),
+        'store' => env(key: 'APP_MAINTENANCE_STORE', default: 'database'),
     ],
 ];

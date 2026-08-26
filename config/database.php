@@ -4,9 +4,15 @@ declare(strict_types=1);
 
 $configuredHome = env('ORBIT_HOME');
 $userHome = getenv('HOME');
-$orbitHome = is_string($configuredHome) && $configuredHome !== ''
-    ? $configuredHome
-    : (is_string($userHome) && $userHome !== '' ? $userHome.'/.orbit' : base_path('.orbit'));
+$orbitHome = base_path('.orbit');
+
+if (is_string($userHome) && $userHome !== '') {
+    $orbitHome = $userHome.'/.orbit';
+}
+
+if (is_string($configuredHome) && $configuredHome !== '') {
+    $orbitHome = $configuredHome;
+}
 
 $configuredDatabase = env('DB_DATABASE');
 $database = is_string($configuredDatabase) && $configuredDatabase !== ''
@@ -22,7 +28,7 @@ return [
             'url' => env('DB_URL'),
             'database' => $database,
             'prefix' => '',
-            'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
+            'foreign_key_constraints' => env(key: 'DB_FOREIGN_KEYS', default: true),
             'busy_timeout' => 5_000,
             'journal_mode' => 'WAL',
             'synchronous' => 'NORMAL',

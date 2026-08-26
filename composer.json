@@ -21,6 +21,7 @@
         "pestphp/pest": "^5.1",
         "pestphp/pest-plugin-laravel": "^5.0",
         "phpunit/phpunit": "^13.0",
+        "rector/rector": "^2.3",
         "spatie/guidelines-skills": "^1.1"
     },
     "autoload": {
@@ -49,6 +50,7 @@
         ],
         "analyse": "vendor/bin/mago analyze app routes database/migrations --reporting-format=medium",
         "check": [
+            "@rector",
             "@test",
             "@format:check",
             "@lint",
@@ -57,6 +59,7 @@
         "format": "vendor/bin/mago format",
         "format:check": "vendor/bin/mago format --check",
         "lint": "vendor/bin/mago lint app routes database/migrations tests --reporting-format=medium",
+        "rector": "vendor/bin/rector process",
         "test": "vendor/bin/pest --compact",
         "test:full": "vendor/bin/pest --no-tia --compact",
         "post-autoload-dump": [
@@ -77,7 +80,9 @@
     },
     "extra": {
         "laravel": {
-            "dont-discover": []
+            "dont-discover": [
+                "laravel/boost"
+            ]
         }
     },
     "config": {
@@ -86,7 +91,8 @@
         "sort-packages": true,
         "allow-plugins": {
             "pestphp/pest-plugin": true,
-            "php-http/discovery": true
+            "php-http/discovery": true,
+            "rector/rector": true
         }
     },
     "minimum-stability": "stable",

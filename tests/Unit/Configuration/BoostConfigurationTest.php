@@ -1,0 +1,321 @@
+<?php
+
+declare(strict_types=1);
+
+use Symfony\Component\Yaml\Yaml;
+
+/** @return array{paths: list<string>, globs: list<list<string>>} */
+$parseIndexedRuleRows = static function (string $index): array {
+    preg_match_all(
+        pattern: '/^\|\s*(?<globs>[^|]+?)\s*\|\s*(?<path>\.ai\/rules\/[^|]+\.md)\s*\|$/m',
+        subject: $index,
+        matches: $matches,
+    );
+
+    return [
+        'paths' => array_map(trim(...), $matches['path'] ?? []),
+        'globs' => array_map(
+            static fn (string $globs): array => array_map(trim(...), explode(',', $globs)),
+            $matches['globs'] ?? [],
+        ),
+    ];
+};
+
+it('enables durable rules and scoped guideline extraction', function (): void {
+    /** @var array<string, mixed> $configuration */
+    $configuration = require dirname(path: __DIR__, levels: 3).'/config/boost.php';
+
+    expect($configuration['rules'] ?? null)
+        ->toBe([
+            'enabled' => true,
+            'scoped_guidelines' => true,
+        ]);
+});
+
+it('requires the committed rule index and every indexed rule file before edits', function () use (
+    $parseIndexedRuleRows,
+): void {
+    $projectRoot = dirname(path: __DIR__, levels: 3);
+    $indexPath = "{$projectRoot}/.ai/rules/index.md";
+
+    expect($indexPath)
+        ->toBeFile()
+        ->and(is_readable($indexPath))
+        ->toBeTrue();
+
+    $index = file_get_contents($indexPath);
+
+    expect($index)->toBeString();
+
+    $indexedRuleRows = $parseIndexedRuleRows($index);
+    $expectedRuleFiles = [
+        '.ai/rules/app.md',
+        '.ai/rules/boost/http-routes.md',
+        '.ai/rules/boost/models.md',
+        '.ai/rules/boost/tests.md',
+        '.ai/rules/infrastructure.md',
+        '.ai/rules/tests.md',
+    ];
+    $indexedRulePaths = $indexedRuleRows['paths'];
+
+    expect($indexedRulePaths)
+        ->toBe(array_values(array_unique($indexedRulePaths)))
+        ->toBe($expectedRuleFiles);
+
+    $indexedRuleFiles = [];
+
+    foreach ($indexedRulePaths as $entry => $indexedRulePath) {
+        $indexedRuleFiles[$indexedRulePath] = $indexedRuleRows['globs'][$entry];
+    }
+
+    expect($indexedRuleFiles)->not->toBeEmpty();
+
+    foreach ($indexedRuleFiles as $indexedRuleFile => $indexedGlobs) {
+        $rulePath = "{$projectRoot}/{$indexedRuleFile}";
+
+        expect($rulePath)
+            ->toBeFile("Indexed rule file does not exist: {$indexedRuleFile}")
+            ->and(is_readable($rulePath))
+            ->toBeTrue("Indexed rule file is not readable: {$indexedRuleFile}");
+
+        $rule = file_get_contents($rulePath);
+
+        expect($rule)->toBeString();
+        expect(trim($rule))->not->toBeEmpty("Indexed rule file is empty: {$indexedRuleFile}");
+
+        preg_match('/\A---\R(?<frontmatter>.*?)\R---\R/s', $rule, $frontmatterMatch);
+        $frontmatter = Yaml::parse($frontmatterMatch['frontmatter'] ?? '');
+
+        expect($frontmatter)
+            ->toBeArray()
+            ->and($frontmatter['paths'] ?? null)
+            ->toBe($indexedGlobs);
+    }
+
+    $rulesDirectory = "{$projectRoot}/.ai/rules";
+    $ruleIterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($rulesDirectory, FilesystemIterator::SKIP_DOTS),
+    );
+    $ruleFiles = [];
+
+    foreach ($ruleIterator as $ruleFile) {
+        if (! $ruleFile->isFile() || $ruleFile->getExtension() !== 'md' || $ruleFile->getFilename() === 'index.md') {
+            continue;
+        }
+
+        $ruleFiles[] = '.ai/rules/'
+        .ltrim(
+            string: str_replace(
+                search: '\\',
+                replace: '/',
+                subject: substr($ruleFile->getPathname(), strlen($rulesDirectory)),
+            ),
+            characters: '/',
+        );
+    }
+
+    sort($ruleFiles);
+    $indexedPaths = array_keys($indexedRuleFiles);
+    sort($indexedPaths);
+
+    expect($indexedPaths)->toBe($ruleFiles);
+
+    $agents = file_get_contents("{$projectRoot}/AGENTS.md");
+    $projectGuidance = is_string($agents)
+        ? strstr(haystack: $agents, needle: "\n<laravel-boost-guidelines>", before_needle: true)
+        : false;
+
+    expect($agents)
+        ->toBeString()
+        ->toContain(
+            '## Required Guidance Bootstrap',
+            '`.ai/rules/index.md` and every rule file indexed by it are required repository state.',
+            'If the index or any indexed rule file is missing or unreadable, the checkout or Boost bootstrap is incomplete.',
+            'Read every indexed rule whose globs match the files in scope before planning or editing.',
+            'Stop and restore or regenerate the guidance before continuing.',
+        )
+        ->not->toContain(
+            'in `.ai/rules` when that directory exists',
+            'If `.ai/rules` does not exist, continue without it.',
+            'when that directory exists',
+            'continue without it',
+        );
+    expect($projectGuidance)
+        ->toBeString()
+        ->toContain(
+            '## Required Guidance Bootstrap',
+            '`.ai/rules/index.md` and every rule file indexed by it are required repository state.',
+            'Agents must restore or regenerate the guidance before editing.',
+            'Never silently continue when the required project rules are absent.',
+        );
+});
+
+it('keeps duplicate rule rows visible until uniqueness validation', function () use ($parseIndexedRuleRows): void {
+    $index = <<<'MARKDOWN'
+        | Applies to | Rule file |
+        | --- | --- |
+        | app/** | .ai/rules/app.md |
+        | app/** | .ai/rules/app.md |
+        MARKDOWN;
+    $indexedRulePaths = $parseIndexedRuleRows($index)['paths'];
+
+    expect($indexedRulePaths)
+        ->toBe([
+            '.ai/rules/app.md',
+            '.ai/rules/app.md',
+        ])
+        ->not->toBe(array_values(array_unique($indexedRulePaths)));
+});
+
+it('keeps generated scoped guidance complete and de-duplicated', function (): void {
+    $projectRoot = dirname(path: __DIR__, levels: 3);
+
+    $readProjectFile = static function (string $relativePath) use ($projectRoot): string {
+        $contents = file_get_contents("{$projectRoot}/{$relativePath}");
+
+        if (! is_string($contents)) {
+            throw new RuntimeException("Could not read {$relativePath}.");
+        }
+
+        return $contents;
+    };
+
+    $index = $readProjectFile('.ai/rules/index.md');
+
+    expect($index)->toContain(
+        '| app/** | .ai/rules/app.md |',
+        '| app/Http/**, routes/** | .ai/rules/boost/http-routes.md |',
+        '| app/Models/** | .ai/rules/boost/models.md |',
+        '| tests/** | .ai/rules/boost/tests.md |',
+        '| app/Infrastructure/** | .ai/rules/infrastructure.md |',
+        '| tests/** | .ai/rules/tests.md |',
+    );
+
+    expect($readProjectFile('.ai/rules/boost/http-routes.md'))
+        ->toContain(
+            '## APIs & Eloquent Resources',
+            'default to using Eloquent API Resources and API versioning',
+        );
+    expect($readProjectFile('.ai/rules/boost/models.md'))
+        ->toContain('### Model Creation', 'create useful factories and seeders');
+    expect($readProjectFile('.ai/rules/boost/tests.md'))
+        ->toContain(
+            '# Pest',
+            'Faker:',
+            'php artisan make:test --pest',
+            'Read the `testing-best-practices` skill',
+            'Do not delete tests or test files without approval.',
+            '--filter=testName',
+        );
+
+    $appRules = $readProjectFile('.ai/rules/app.md');
+    $infrastructureRules = $readProjectFile('.ai/rules/infrastructure.md');
+    $testRules = $readProjectFile('.ai/rules/tests.md');
+    $projectRules = implode("\n", [$appRules, $infrastructureRules, $testRules]);
+    $expectedDecisionHeadings = [
+        '## Respect Linux and Darwin privilege boundaries',
+        '## Use fixed typed argv',
+        '## Keep secrets out of command arguments',
+        '## Publish managed state atomically',
+        '## Search orbit-old before infrastructure design',
+        '## Run the Pest and Mago gates',
+    ];
+
+    foreach ($expectedDecisionHeadings as $expectedDecisionHeading) {
+        expect(substr_count(haystack: $projectRules, needle: $expectedDecisionHeading))->toBe(1);
+    }
+
+    expect($appRules)->toContain('pinned gateway SSH', 'Darwin actions', 'local macOS adapter');
+    expect($infrastructureRules)
+        ->toContain(
+            'fixed, typed argv',
+            'generic executor',
+            'stdin',
+            'mode-0600 protected files',
+            'exact Orbit ownership',
+            'lock first',
+            'write a candidate',
+            'validate it',
+            'switch atomically',
+            'restore the exact prior file or symlink',
+            'explicit recovery path',
+            '/home/nckrtl/orbit-old',
+            'never port the retired Agent',
+        );
+    expect($testRules)
+        ->toContain('Pest 5 TDD', 'Test Impact Analysis', 'without TIA', 'Rector', 'Mago', 'git diff --check');
+});
+
+it('preserves project and installed testing guidance', function (): void {
+    $projectRoot = dirname(path: __DIR__, levels: 3);
+
+    $readProjectFile = static function (string $relativePath) use ($projectRoot): string {
+        $contents = file_get_contents("{$projectRoot}/{$relativePath}");
+
+        if (! is_string($contents)) {
+            throw new RuntimeException("Could not read {$relativePath}.");
+        }
+
+        return $contents;
+    };
+
+    expect($readProjectFile('AGENTS.md'))
+        ->toContain(
+            'Use Pest 5 with `describe()` and `it()`.',
+            'Use Mago for formatting, linting, and analysis.',
+            'Always activate the `spatie-laravel-php` skill',
+            'Always activate the `spatie-version-control` skill',
+            'Always activate the `spatie-security` skill',
+            '## Skills Activation',
+            'Test every code change by adding or updating a test.',
+            'Read the `testing-best-practices` skill before writing tests.',
+        );
+
+    expect($readProjectFile('boost.json'))
+        ->toContain(
+            '"laravel-best-practices"',
+            '"testing-best-practices"',
+            '"pest-testing"',
+            '"spatie-laravel-php"',
+            '"spatie-security"',
+            '"spatie-version-control"',
+        );
+
+    expect($readProjectFile('.agents/skills/testing-best-practices/rules/assertions.md'))
+        ->toContain('`assertModelExists($model)`');
+    expect($readProjectFile('.agents/skills/testing-best-practices/rules/isolation.md'))
+        ->toContain(
+            '`Exceptions::fake()`',
+            '`Event::fake()`',
+            '`LazilyRefreshDatabase` instead of `RefreshDatabase`',
+        );
+    expect($readProjectFile('.agents/skills/testing-best-practices/rules/test-data.md'))
+        ->toContain('named factory state', '`recycle()`', '`sequence()`');
+
+    expect($readProjectFile('.agents/skills/orbit-gateway-development/SKILL.md'))
+        ->toContain(
+            'fixed argument arrays',
+            'secrets out of local and remote argument arrays',
+            'Require exact Orbit ownership before mutation.',
+            'Linux privilege escalation',
+            'Darwin',
+            'search `~/orbit-old`',
+            'Pest 5 with TIA',
+            'Mago format/lint/analyse',
+        );
+});
+
+it('keeps two-factor authentication mandatory when the preferred integration is unavailable', function (): void {
+    $projectRoot = dirname(path: __DIR__, levels: 3);
+    $securityGuidance = file_get_contents(
+        "{$projectRoot}/.agents/skills/spatie-security/references/spatie-security-guidelines.md",
+    );
+
+    expect($securityGuidance)
+        ->toBeString()
+        ->toContain(
+            'Enable two-factor authentication for every service that supports it.',
+            'Use 1Password for the second factor when the service supports that integration; otherwise use another supported authenticator.',
+        )
+        ->not->toContain('Enable two-factor authentication through 1Password when available.');
+});

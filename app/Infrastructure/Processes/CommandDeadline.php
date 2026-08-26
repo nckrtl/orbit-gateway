@@ -12,7 +12,7 @@ final class CommandDeadline
     private ?float $expiresAt = null;
 
     /** @var Closure(): float */
-    private Closure $clock;
+    private readonly Closure $clock;
 
     /** @param (Closure(): float)|null $clock */
     public function __construct(?Closure $clock = null)

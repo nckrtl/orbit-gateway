@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 final class NodeRole extends Model
 {
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = [
         'node_id',
         'role',

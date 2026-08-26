@@ -12,6 +12,7 @@
     "sail": false,
     "skills": [
         "laravel-best-practices",
+        "testing-best-practices",
         "pest-testing",
         "spatie-laravel-php",
         "spatie-security",

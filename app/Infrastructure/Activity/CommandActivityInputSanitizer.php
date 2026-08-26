@@ -6,9 +6,14 @@ namespace App\Infrastructure\Activity;
 
 use Illuminate\Support\Str;
 
+/** @mago-expect lint:cyclomatic-complexity Sanitization keeps all secret-shape rules in one boundary. */
 final readonly class CommandActivityInputSanitizer
 {
     private const string REDACTED = '[REDACTED]';
+
+    private const string INVALID_ENVIRONMENT_NAME = '[INVALID_ENVIRONMENT_NAME]';
+
+    private const string INVALID_PROPERTY_NAME = '[INVALID_PROPERTY_NAME]';
 
     /** @var list<string> */
     private const array FORBIDDEN_KEYS = [
@@ -40,7 +45,6 @@ final readonly class CommandActivityInputSanitizer
 
     private const string PEM_BLOCK_PATTERN = '/-----BEGIN [A-Z0-9 ]+-----[\s\S]*?-----END [A-Z0-9 ]+-----/';
 
-    /** @mago-expect analysis:mixed-assignment Recursive request data has a mixed value boundary. */
     public function sanitize(mixed $value, ?string $key = null): mixed
     {
         if (is_string($key) && $this->isSensitiveKey($key)) {
@@ -51,9 +55,31 @@ final readonly class CommandActivityInputSanitizer
             return is_string($value) ? $this->redactText($value) : $value;
         }
 
+        if (is_string($key) && Str::snake($key) === 'environment') {
+            return $this->sanitizeEnvironment($value);
+        }
+
+        return $this->sanitizeProperties($value);
+    }
+
+    /**
+     * @param array<array-key, mixed> $properties
+     *
+     * @return array<array-key, mixed>
+     *
+     * @mago-expect analysis:mixed-assignment Recursive activity properties have a mixed value boundary.
+     */
+    public function sanitizeProperties(array $properties): array
+    {
         $sanitized = [];
 
-        foreach ($value as $nestedKey => $nestedValue) {
+        foreach ($properties as $nestedKey => $nestedValue) {
+            if (is_string($nestedKey) && ! $this->isValidPropertyName($nestedKey)) {
+                $sanitized[self::INVALID_PROPERTY_NAME] = self::REDACTED;
+
+                continue;
+            }
+
             $sanitized[$nestedKey] = $this->sanitize(
                 $nestedValue,
                 is_string($nestedKey) ? $nestedKey : null,
@@ -61,6 +87,11 @@ final readonly class CommandActivityInputSanitizer
         }
 
         return $sanitized;
+    }
+
+    private function isValidPropertyName(string $name): bool
+    {
+        return preg_match('//u', $name) === 1 && preg_match('/[\p{C}\p{Zl}\p{Zp}]/u', $name) === 0;
     }
 
     public function redactText(string $value): string
@@ -92,7 +123,7 @@ final readonly class CommandActivityInputSanitizer
         $keys = self::SECRET_KEY_IDENTIFIER;
         $redacted =
             preg_replace(
-                pattern: '/\b('.$keys.')\s*=\s*(?:"[^"]*"|\'[^\']*\'|\S+)/i',
+                pattern: '/\b('.$keys.')\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s&#]+)/i',
                 replacement: '$1='.self::REDACTED,
                 subject: $redacted,
             ) ?? $redacted;
@@ -129,5 +160,24 @@ final readonly class CommandActivityInputSanitizer
                 $normalized,
             ) === 1
         );
+    }
+
+    /**
+     * @param array<array-key, mixed> $environment
+     *
+     * @return array<string, string>
+     */
+    private function sanitizeEnvironment(array $environment): array
+    {
+        $sanitized = [];
+
+        foreach (array_keys($environment) as $name) {
+            $safeName = is_string($name) && preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/D', $name) === 1
+                ? $name
+                : self::INVALID_ENVIRONMENT_NAME;
+            $sanitized[$safeName] = self::REDACTED;
+        }
+
+        return $sanitized;
     }
 }

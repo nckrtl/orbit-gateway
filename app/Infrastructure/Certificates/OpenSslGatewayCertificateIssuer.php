@@ -17,6 +17,8 @@ use Throwable;
 /** @mago-expect lint:cyclomatic-complexity Certificate issuance validates and publishes one protected immutable key pair. */
 final readonly class OpenSslGatewayCertificateIssuer implements GatewayCertificateIssuer
 {
+    private const string LEAF_VALIDITY_DAYS = '397';
+
     public function __construct(
         private ProcessRunner $processes,
         private OpenSslGatewayCertificateValidator $validator,
@@ -157,6 +159,7 @@ final readonly class OpenSslGatewayCertificateIssuer implements GatewayCertifica
         string $wireguardAddress,
         string $caDirectory,
     ): void {
+        $extensionsPath = dirname($paths->certificatePath).'/gateway.ext';
         $this->run(
             step: 'gateway-certificate-key',
             errorCode: 'gateway.certificate_key_failed',
@@ -176,10 +179,25 @@ final readonly class OpenSslGatewayCertificateIssuer implements GatewayCertifica
                 $requestPath,
                 '-subj',
                 "/CN={$hostname}",
-                '-addext',
-                "subjectAltName=DNS:{$hostname},IP:{$wireguardAddress}",
             ],
         );
+        $contents = <<<EXTENSIONS
+            [gateway]
+            basicConstraints = critical,CA:FALSE
+            keyUsage = critical,digitalSignature
+            extendedKeyUsage = serverAuth
+            subjectAltName = DNS:{$hostname},IP:{$wireguardAddress}
+            EXTENSIONS;
+
+        if (file_put_contents($extensionsPath, $contents) === false) {
+            throw new NodeProvisioningException(
+                step: 'gateway-certificate-extensions',
+                errorCode: 'gateway.certificate_extensions_failed',
+                message: 'Could not write gateway certificate extensions.',
+            );
+        }
+
+        chmod(filename: $extensionsPath, permissions: 0o600);
         $this->run(
             step: 'gateway-certificate-sign',
             errorCode: 'gateway.certificate_sign_failed',
@@ -193,15 +211,17 @@ final readonly class OpenSslGatewayCertificateIssuer implements GatewayCertifica
                 $caDirectory.'/root.pem',
                 '-CAkey',
                 $caDirectory.'/root.key',
-                '-CAserial',
-                $caDirectory.'/root.srl',
-                '-CAcreateserial',
+                '-set_serial',
+                '0x'.bin2hex(random_bytes(16)),
                 '-out',
                 $paths->certificatePath,
                 '-days',
-                '825',
-                '-copy_extensions',
-                'copy',
+                self::LEAF_VALIDITY_DAYS,
+                '-sha256',
+                '-extfile',
+                $extensionsPath,
+                '-extensions',
+                'gateway',
             ],
         );
         chmod(filename: $paths->certificatePath, permissions: 0o644);
@@ -226,7 +246,7 @@ final readonly class OpenSslGatewayCertificateIssuer implements GatewayCertifica
             return;
         }
 
-        foreach (['gateway.key', 'gateway.pem', 'gateway.csr'] as $filename) {
+        foreach (['gateway.key', 'gateway.pem', 'gateway.csr', 'gateway.ext'] as $filename) {
             $path = "{$directory}/{$filename}";
 
             if (is_file($path)) {

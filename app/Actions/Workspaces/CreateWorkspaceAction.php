@@ -110,6 +110,23 @@ final readonly class CreateWorkspaceAction
 
     private function ensureAppDevInstance(Instance $instance): void
     {
+        $hasAppProdRole = $instance
+            ->node
+            ->roles
+            ->contains(
+                static fn ($role): bool => (
+                    $role->role === RoleName::AppProd
+                    && $role->status === LifecycleStatus::Active
+                ),
+            );
+
+        if ($hasAppProdRole) {
+            throw new ResourceOperationException(
+                errorCode: 'workspace.unsupported_for_app_prod',
+                message: "Instance [{$instance->name}] is on an app-prod node, which does not support workspaces.",
+            );
+        }
+
         $hasRole = $instance->node->status === LifecycleStatus::Active
         && $instance
             ->node

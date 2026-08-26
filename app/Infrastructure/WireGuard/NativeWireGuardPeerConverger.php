@@ -5,31 +5,19 @@ declare(strict_types=1);
 namespace App\Infrastructure\WireGuard;
 
 use App\Domain\Nodes\NodeProvisioningException;
-use App\Infrastructure\Files\ProtectedFileWriter;
+use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Infrastructure\Processes\CommandResult;
-use App\Infrastructure\Processes\ProcessInvocation;
-use App\Infrastructure\Processes\ProcessRunner;
 use App\Infrastructure\Ssh\RemoteCommand;
 use App\Infrastructure\Ssh\SshConnection;
 use App\Infrastructure\Ssh\SshExecutor;
 use App\Models\Node;
 
-/** @mago-expect lint:excessive-parameter-list */
 final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConverger
 {
-    private const string GENERATED_SERVER_CONFIG_PATH = '/generated/wireguard/orbit.conf';
-
-    private const string CANDIDATE_SERVER_CONFIG_PATH = '/etc/wireguard/orbit-candidate.conf';
-
-    private const string LIVE_SERVER_CONFIG_PATH = '/etc/wireguard/orbit.conf';
-
     public function __construct(
         private VpnConfigurationRepository $configuration,
-        private WireGuardServerConfigRenderer $serverRenderer,
-        private ProtectedFileWriter $files,
-        private ProcessRunner $processes,
+        private GatewayPeerProjectionManager $gatewayPeers,
         private SshExecutor $ssh,
-        private string $orbitHome,
     ) {}
 
     public function converge(Node $node, SshConnection $connection): void
@@ -41,6 +29,8 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                 arguments: ['sudo', 'bash', '-seu'],
                 input: <<<'BASH'
                     install -d -m 0700 /etc/wireguard
+                    exec 9>/run/lock/orbit-wireguard-peer.lock
+                    flock -w 30 9
                     umask 077
                     if [ ! -s /etc/wireguard/orbit.key ]; then
                         wg genkey > /etc/wireguard/orbit.key
@@ -62,24 +52,7 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
         }
 
         $node->update(['wireguard_public_key' => $publicKey]);
-        $serverConfig = $this->serverRenderer->render(
-            $vpn,
-            Node::query()->whereNotNull('wireguard_public_key')->get(),
-        );
-        $generatedPath = rtrim(string: $this->orbitHome, characters: '/').self::GENERATED_SERVER_CONFIG_PATH;
-        $this->files->put($generatedPath, $serverConfig);
-
-        $this->installServerConfig($generatedPath);
-        $this->runLocal(
-            'wireguard-server-enable',
-            'vpn.server_start_failed',
-            ['sudo', 'systemctl', 'enable', 'wg-quick@orbit'],
-        );
-        $this->runLocal(
-            'wireguard-server-restart',
-            'vpn.server_start_failed',
-            ['sudo', 'systemctl', 'restart', 'wg-quick@orbit'],
-        );
+        $this->gatewayPeers->converge($node);
 
         $peerResult = $this->ssh->execute(
             $connection,
@@ -97,7 +70,7 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     $vpn->domain,
                     $vpn->dnsThroughWireGuard ? 'wireguard' : 'underlay',
                 ],
-                input: <<<'BASH'
+                input: <<<'BASH_WRAP'
                     server_public_key=$1
                     endpoint=$2
                     address=$3
@@ -105,29 +78,43 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     dns_server=$5
                     domain=$6
                     dns_mode=$7
+                    exec 9>/run/lock/orbit-wireguard-peer.lock
+                    flock -w 30 9
                     private_key=$(cat /etc/wireguard/orbit.key)
                     candidate=/etc/wireguard/orbit-candidate.conf
+                    live=/etc/wireguard/orbit.conf
+                    backup=/etc/wireguard/.orbit.conf.rollback
                     dns_state=/etc/wireguard/orbit.dns-link
+                    dns_state_candidate=/etc/wireguard/.orbit.dns-link.candidate
                     printf -v dns_server_escaped '%q' "$dns_server"
                     printf -v domain_escaped '%q' "~$domain"
-                    trap 'rm -f -- "$candidate"' EXIT
+                    trap 'rm -f -- "$candidate" "$dns_state_candidate"' EXIT
 
                     case "$dns_mode" in
                         wireguard|underlay) ;;
                         *) exit 1 ;;
                     esac
 
-                    if [ -s "$dns_state" ]; then
-                        old_dns_link=$(cat "$dns_state")
-                        if [[ "$old_dns_link" =~ ^[A-Za-z0-9_.:+-]+$ ]]; then
-                            resolvectl revert "$old_dns_link" || true
-                        fi
-                        rm -f -- "$dns_state"
-                    fi
-
                     dns_hooks=
                     if [ "$dns_mode" = wireguard ]; then
                         dns_hooks="PostUp = resolvectl dns %i $dns_server_escaped; resolvectl domain %i $domain_escaped"$'\n'"PreDown = resolvectl revert %i"
+                    fi
+
+                    old_dns_link=
+                    old_dns_server=
+                    old_dns_domain=
+                    if [ -s "$dns_state" ]; then
+                        mapfile -t old_dns_state < "$dns_state"
+                        old_dns_link=${old_dns_state[0]:-}
+                        old_dns_server=${old_dns_state[1]:-$dns_server}
+                        old_dns_domain=${old_dns_state[2]:-$domain}
+                        if [[ ! "$old_dns_link" =~ ^[A-Za-z0-9_.:+-]+$ ]] \
+                            || [[ ! "$old_dns_server" =~ ^[A-Fa-f0-9:.]+$ ]] \
+                            || [[ ! "$old_dns_domain" =~ ^[A-Za-z0-9.-]+$ ]]; then
+                            old_dns_link=
+                            old_dns_server=
+                            old_dns_domain=
+                        fi
                     fi
 
                     cat > "$candidate" <<EOF
@@ -146,10 +133,41 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                     chown root:root "$candidate"
                     chmod 0600 "$candidate"
                     wg-quick strip "$candidate" >/dev/null
-                    mv -f -- "$candidate" /etc/wireguard/orbit.conf
-                    trap - EXIT
-                    systemctl enable wg-quick@orbit
-                    systemctl restart wg-quick@orbit
+                    rm -f -- "$backup"
+                    if [ -f "$live" ]; then
+                        cp --preserve=mode,ownership -- "$live" "$backup"
+                    fi
+                    restore_previous() {
+                        if [ -f "$backup" ]; then
+                            mv -fT -- "$backup" "$live"
+                            systemctl restart wg-quick@orbit || true
+                        else
+                            rm -f -- "$live"
+                            systemctl stop wg-quick@orbit || true
+                        fi
+                    }
+                    dns_link=
+                    restore_dns() {
+                        if [[ "$dns_link" =~ ^[A-Za-z0-9_.:+-]+$ ]]; then
+                            resolvectl revert "$dns_link" || true
+                        fi
+                        if [ -n "$old_dns_link" ]; then
+                            resolvectl dns "$old_dns_link" "$old_dns_server" || true
+                            resolvectl domain "$old_dns_link" "~$old_dns_domain" || true
+                        fi
+                    }
+                    if ! mv -f -- "$candidate" "$live"; then
+                        rm -f -- "$backup"
+                        exit 1
+                    fi
+                    if ! systemctl enable wg-quick@orbit; then
+                        restore_previous
+                        exit 1
+                    fi
+                    if ! systemctl restart wg-quick@orbit; then
+                        restore_previous
+                        exit 1
+                    fi
 
                     if [ "$dns_mode" = underlay ]; then
                         route=$(ip -o route get "$dns_server")
@@ -157,17 +175,47 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                             dns_link=${BASH_REMATCH[1]}
                         else
                             echo 'Could not resolve DNS interface.' >&2
+                            restore_dns
+                            restore_previous
                             exit 1
                         fi
-                        resolvectl dns "$dns_link" "$dns_server"
-                        resolvectl domain "$dns_link" "~$domain"
+                        if ! resolvectl dns "$dns_link" "$dns_server"; then
+                            restore_dns
+                            restore_previous
+                            exit 1
+                        fi
+                        if ! resolvectl domain "$dns_link" "~$domain"; then
+                            restore_dns
+                            restore_previous
+                            exit 1
+                        fi
                     else
                         dns_link=orbit
                     fi
 
-                    printf '%s\n' "$dns_link" > "$dns_state"
-                    wg show orbit public-key
-                    BASH,
+                    if [ -n "$old_dns_link" ] && [ "$old_dns_link" != "$dns_link" ]; then
+                        resolvectl revert "$old_dns_link" || true
+                    fi
+                    if ! printf '%s\n%s\n%s\n' "$dns_link" "$dns_server" "$domain" > "$dns_state_candidate"; then
+                        restore_dns
+                        restore_previous
+                        exit 1
+                    fi
+                    chmod 0600 "$dns_state_candidate"
+                    if ! mv -f -- "$dns_state_candidate" "$dns_state"; then
+                        restore_dns
+                        restore_previous
+                        exit 1
+                    fi
+                    if ! active_public_key=$(wg show orbit public-key); then
+                        restore_dns
+                        restore_previous
+                        exit 1
+                    fi
+                    rm -f -- "$backup"
+                    trap - EXIT
+                    printf '%s\n' "$active_public_key"
+                    BASH_WRAP,
             ),
         );
 
@@ -179,77 +227,6 @@ final readonly class NativeWireGuardPeerConverger implements WireGuardPeerConver
                 result: $peerResult,
             );
         }
-    }
-
-    private function installServerConfig(string $generatedPath): void
-    {
-        try {
-            $this->runLocal(
-                'wireguard-server-install',
-                'vpn.server_config_install_failed',
-                [
-                    'sudo',
-                    'install',
-                    '-D',
-                    '-o',
-                    'root',
-                    '-g',
-                    'root',
-                    '-m',
-                    '0600',
-                    '--',
-                    $generatedPath,
-                    self::CANDIDATE_SERVER_CONFIG_PATH,
-                ],
-            );
-            $this->runLocal(
-                'wireguard-server-validate',
-                'vpn.server_config_invalid',
-                ['sudo', 'wg-quick', 'strip', self::CANDIDATE_SERVER_CONFIG_PATH],
-            );
-            $this->runLocal(
-                'wireguard-server-install',
-                'vpn.server_config_install_failed',
-                [
-                    'sudo',
-                    'mv',
-                    '-f',
-                    '--',
-                    self::CANDIDATE_SERVER_CONFIG_PATH,
-                    self::LIVE_SERVER_CONFIG_PATH,
-                ],
-            );
-        } catch (NodeProvisioningException $exception) {
-            $this->cleanupCandidateServerConfig();
-
-            throw $exception;
-        }
-    }
-
-    /** @param non-empty-list<string> $arguments */
-    private function runLocal(string $step, string $errorCode, array $arguments): void
-    {
-        $result = $this->processes->run(new ProcessInvocation($arguments));
-
-        if (! $result->succeeded()) {
-            throw $this->failure(
-                step: $step,
-                errorCode: $errorCode,
-                message: 'Could not converge the gateway WireGuard service.',
-                result: $result,
-            );
-        }
-    }
-
-    private function cleanupCandidateServerConfig(): void
-    {
-        $this->processes->run(new ProcessInvocation([
-            'sudo',
-            'rm',
-            '-f',
-            '--',
-            self::CANDIDATE_SERVER_CONFIG_PATH,
-        ]));
     }
 
     private function failure(

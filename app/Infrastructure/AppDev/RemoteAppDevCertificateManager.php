@@ -63,13 +63,42 @@ final readonly class RemoteAppDevCertificateManager implements AppDevCertificate
                     root="/home/orbit/.orbit/certificates/$scope"
                     current="$root/current"
                     caddy_current="/etc/caddy/orbit-certificates/$scope/current"
+                    validity_seconds=0
+
+                    certificate_extension() {
+                        openssl x509 -in "$current/cert.pem" -noout -ext "$1" 2>/dev/null \
+                            | tr '\n' ' ' \
+                            | tr -s ' ' \
+                            | sed 's/^ //; s/ $//'
+                    }
+
+                    if [ -f "$current/cert.pem" ]; then
+                        not_before=$(openssl x509 -in "$current/cert.pem" -noout -startdate | cut -d= -f2-)
+                        not_after=$(openssl x509 -in "$current/cert.pem" -noout -enddate | cut -d= -f2-)
+
+                        if not_before_epoch=$(date -d "$not_before" +%s) && \
+                            not_after_epoch=$(date -d "$not_after" +%s); then
+                            validity_seconds=$((not_after_epoch - not_before_epoch))
+                        fi
+                    fi
 
                     if [ -f "$current/key.pem" ] && [ -f "$current/cert.pem" ] && [ -f "$current/root.pem" ] && \
                         sudo test -f "$caddy_current/key.pem" && sudo test -f "$caddy_current/cert.pem" && \
                         [ "$(sha256sum "$current/root.pem" | cut -d ' ' -f 1)" = "$expected_root_hash" ] && \
                         openssl verify -CAfile "$current/root.pem" "$current/cert.pem" >/dev/null && \
-                        openssl x509 -in "$current/cert.pem" -noout -checkend 86400 >/dev/null && \
+                        openssl x509 -in "$current/cert.pem" -noout -checkend 2592000 >/dev/null && \
+                        [ "$validity_seconds" -ge 34214400 ] && [ "$validity_seconds" -le 34387200 ] && \
                         openssl x509 -in "$current/cert.pem" -noout -checkhost "$hostname" >/dev/null && \
+                        openssl pkey -in "$current/key.pem" -text_pub -noout 2>/dev/null | \
+                            grep -qx 'ED25519 Public-Key:' && \
+                        [ "$(certificate_extension basicConstraints)" = \
+                            'X509v3 Basic Constraints: critical CA:FALSE' ] && \
+                        [ "$(certificate_extension keyUsage)" = \
+                            'X509v3 Key Usage: critical Digital Signature' ] && \
+                        [ "$(certificate_extension extendedKeyUsage)" = \
+                            'X509v3 Extended Key Usage: TLS Web Server Authentication' ] && \
+                        [ "$(certificate_extension subjectAltName)" = \
+                            "X509v3 Subject Alternative Name: DNS:$hostname" ] && \
                         [ "$(openssl pkey -in "$current/key.pem" -pubout 2>/dev/null)" = \
                             "$(openssl x509 -in "$current/cert.pem" -pubkey -noout 2>/dev/null)" ] && \
                         [ "$(openssl x509 -in "$current/cert.pem" -fingerprint -sha256 -noout)" = \
@@ -154,6 +183,8 @@ final readonly class RemoteAppDevCertificateManager implements AppDevCertificate
             rm -f -- "$candidate/request.pem"
             chmod 0600 "$candidate/key.pem"
             chmod 0644 "$candidate/cert.pem" "$candidate/root.pem"
+            openssl pkey -in "$candidate/key.pem" -text_pub -noout 2>/dev/null | \
+                grep -qx 'ED25519 Public-Key:'
             openssl verify -CAfile "$candidate/root.pem" "$candidate/cert.pem"
             openssl x509 -in "$candidate/cert.pem" -noout -checkhost "$hostname"
             test "$(openssl pkey -in "$candidate/key.pem" -pubout 2>/dev/null)" = \

@@ -19,7 +19,7 @@ return [
      |
      */
 
-    'driver' => env('SESSION_DRIVER', 'database'),
+    'driver' => env(key: 'SESSION_DRIVER', default: 'database'),
 
     /*
      |--------------------------------------------------------------------------
@@ -33,9 +33,9 @@ return [
      |
      */
 
-    'lifetime' => (int) env('SESSION_LIFETIME', 120),
+    'lifetime' => (int) env(key: 'SESSION_LIFETIME', default: 120),
 
-    'expire_on_close' => env('SESSION_EXPIRE_ON_CLOSE', false),
+    'expire_on_close' => env(key: 'SESSION_EXPIRE_ON_CLOSE', default: false),
 
     /*
      |--------------------------------------------------------------------------
@@ -48,7 +48,7 @@ return [
      |
      */
 
-    'encrypt' => env('SESSION_ENCRYPT', false),
+    'encrypt' => env(key: 'SESSION_ENCRYPT', default: false),
 
     /*
      |--------------------------------------------------------------------------
@@ -87,7 +87,7 @@ return [
      |
      */
 
-    'table' => env('SESSION_TABLE', 'sessions'),
+    'table' => env(key: 'SESSION_TABLE', default: 'sessions'),
 
     /*
      |--------------------------------------------------------------------------
@@ -129,8 +129,8 @@ return [
      */
 
     'cookie' => env(
-        'SESSION_COOKIE',
-        Str::slug((string) env('APP_NAME', 'laravel')).'-session',
+        key: 'SESSION_COOKIE',
+        default: Str::slug((string) env(key: 'APP_NAME', default: 'laravel')).'-session',
     ),
 
     /*
@@ -144,7 +144,7 @@ return [
      |
      */
 
-    'path' => env('SESSION_PATH', '/'),
+    'path' => env(key: 'SESSION_PATH', default: '/'),
 
     /*
      |--------------------------------------------------------------------------
@@ -183,7 +183,7 @@ return [
      |
      */
 
-    'http_only' => env('SESSION_HTTP_ONLY', true),
+    'http_only' => env(key: 'SESSION_HTTP_ONLY', default: true),
 
     /*
      |--------------------------------------------------------------------------
@@ -200,7 +200,7 @@ return [
      |
      */
 
-    'same_site' => env('SESSION_SAME_SITE', 'lax'),
+    'same_site' => env(key: 'SESSION_SAME_SITE', default: 'lax'),
 
     /*
      |--------------------------------------------------------------------------
@@ -213,7 +213,7 @@ return [
      |
      */
 
-    'partitioned' => env('SESSION_PARTITIONED_COOKIE', false),
+    'partitioned' => env(key: 'SESSION_PARTITIONED_COOKIE', default: false),
 
     /*
      |--------------------------------------------------------------------------

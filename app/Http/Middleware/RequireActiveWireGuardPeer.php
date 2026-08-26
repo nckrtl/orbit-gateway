@@ -13,6 +13,7 @@ use Symfony\Component\HttpFoundation\Response;
 
 final class RequireActiveWireGuardPeer
 {
+    /** @param Closure(Request): Response $next */
     public function handle(Request $request, Closure $next): Response
     {
         $remoteAddress = $request->server('REMOTE_ADDR');
@@ -36,10 +37,7 @@ final class RequireActiveWireGuardPeer
 
         $request->setUserResolver(static fn (): Node => $node);
 
-        /** @var Response $response */
-        $response = $next($request);
-
-        return $response;
+        return $next($request);
     }
 
     private function forbidden(): JsonResponse

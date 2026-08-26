@@ -16,6 +16,8 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
         private AppDevSiteRepository $sites,
         private AppDevPhpFpmConfigRenderer $renderer,
         private AppDevSshExecutor $ssh,
+        private string $phpRoot = '/etc/php',
+        private string $lockDirectory = '/run/lock',
     ) {}
 
     public function converge(Node $node): void
@@ -62,9 +64,10 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
         $result = $this->ssh->execute(
             $node,
             new RemoteCommand(
-                arguments: ['bash', '-seu'],
+                arguments: ['bash', '-seu', '--', $this->phpRoot],
                 input: <<<'BASH'
-                    for path in /etc/php/*/fpm/pool.d/orbit-scopes.conf; do
+                    php_root=$1
+                    for path in "$php_root"/*/fpm/pool.d/orbit-scopes.conf; do
                         if [ -e "$path" ]; then
                             basename "$(dirname "$(dirname "$(dirname "$path")")")"
                         fi
@@ -116,7 +119,15 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
         $this->ssh->execute(
             $node,
             new RemoteCommand(
-                arguments: ['bash', '-seu', '--', $version],
+                arguments: [
+                    'sudo',
+                    'bash',
+                    '-seu',
+                    '--',
+                    $version,
+                    $this->phpRoot,
+                    $this->lockDirectory,
+                ],
                 input: $this->publishScript($configuration),
             ),
             step: 'php-fpm-config',
@@ -130,10 +141,16 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
 
         return <<<BASH
             version=\$1
-            pool_directory="/etc/php/\$version/fpm/pool.d"
-            main_configuration="/etc/php/\$version/fpm/php-fpm.conf"
+            php_root=\$2
+            lock_directory=\$3
+            pool_directory="\$php_root/\$version/fpm/pool.d"
+            main_configuration="\$php_root/\$version/fpm/php-fpm.conf"
             managed_configuration="\$pool_directory/orbit-scopes.conf"
+            exec 9>"\$lock_directory/orbit-php-fpm-\$version.lock"
+            flock -w 30 9
             temporary_directory=\$(mktemp -d)
+            candidate="\$temporary_directory/orbit-scopes.conf"
+            backup="\$temporary_directory/orbit-scopes.backup"
             trap 'rm -rf -- "\$temporary_directory"' EXIT
             install -d -m 0755 -- "\$temporary_directory/pool.d"
 
@@ -145,7 +162,8 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
                 cp -- "\$pool" "\$temporary_directory/pool.d/"
             done
 
-            printf '%s' '{$encoded}' | base64 --decode > "\$temporary_directory/pool.d/orbit-scopes.conf"
+            printf '%s' '{$encoded}' | base64 --decode > "\$candidate"
+            cp -- "\$candidate" "\$temporary_directory/pool.d/orbit-scopes.conf"
             awk -v managed_include="include=\$temporary_directory/pool.d/*.conf" '
                 /^include=.*pool[.]d\/[*][.]conf$/ {
                     print managed_include
@@ -157,17 +175,35 @@ final readonly class RemoteAppDevPhpFpmManager implements AppDevPhpFpmManager
             ' "\$main_configuration" > "\$temporary_directory/php-fpm.conf"
             sudo "php-fpm\$version" -y "\$temporary_directory/php-fpm.conf" -t
 
-            if [ -s "\$temporary_directory/pool.d/orbit-scopes.conf" ]; then
-                candidate="\$pool_directory/.orbit-scopes.\$\$.candidate"
-                sudo install -o root -g root -m 0644 -- \
-                    "\$temporary_directory/pool.d/orbit-scopes.conf" "\$candidate"
-                sudo mv -fT -- "\$candidate" "\$managed_configuration"
+            if [ -f "\$managed_configuration" ] && cmp -s -- "\$candidate" "\$managed_configuration"; then
+                exit 0
+            fi
+
+            had_previous=0
+            if [ -f "\$managed_configuration" ]; then
+                sudo cp -a -- "\$managed_configuration" "\$backup"
+                had_previous=1
+            fi
+
+            if [ -s "\$candidate" ]; then
+                staged="\$pool_directory/.orbit-scopes.\$\$.candidate"
+                sudo install -o root -g root -m 0644 -- "\$candidate" "\$staged"
+                sudo mv -fT -- "\$staged" "\$managed_configuration"
             else
                 sudo rm -f -- "\$managed_configuration"
             fi
 
-            sudo systemctl enable "php\$version-fpm"
-            sudo systemctl reload-or-restart "php\$version-fpm"
+            if ! sudo systemctl enable "php\$version-fpm" || ! sudo systemctl reload-or-restart "php\$version-fpm"; then
+                if [ "\$had_previous" = 1 ]; then
+                    rollback="\$pool_directory/.orbit-scopes.\$\$.rollback"
+                    sudo cp -a -- "\$backup" "\$rollback"
+                    sudo mv -fT -- "\$rollback" "\$managed_configuration"
+                else
+                    sudo rm -f -- "\$managed_configuration"
+                fi
+                sudo systemctl reload-or-restart "php\$version-fpm" || true
+                exit 1
+            fi
             BASH;
     }
 }

@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\Model;
 final class Setting extends Model
 {
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = ['scope_type', 'scope_id', 'key', 'value', 'is_secret'];
 
     /**

@@ -6,6 +6,8 @@ namespace App\Actions\Instances;
 
 use App\Domain\AppDev\AppDevRuntimeConverger;
 use App\Domain\AppDev\RuntimeConvergenceException;
+use App\Domain\AppProd\AppProdRuntimeConverger;
+use App\Domain\Instances\CertificateMode;
 use App\Domain\Shared\LifecycleStatus;
 use App\Models\Instance;
 use Throwable;
@@ -14,6 +16,7 @@ final readonly class UpdateInstancePhpAction
 {
     public function __construct(
         private AppDevRuntimeConverger $runtime,
+        private AppProdRuntimeConverger $productionRuntime,
     ) {}
 
     public function execute(Instance $instance, string $phpVersion): Instance
@@ -26,7 +29,10 @@ final readonly class UpdateInstancePhpAction
         ]);
 
         try {
-            $this->runtime->convergeInstance($instance->refresh()->load(['app', 'node']));
+            $runtime = $instance->certificate_mode === CertificateMode::Acme
+                ? $this->productionRuntime
+                : $this->runtime;
+            $runtime->convergeInstance($instance->refresh()->load(['app', 'node']));
         } catch (RuntimeConvergenceException $exception) {
             $this->markFailed($instance, $exception);
 

@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace App\Http\Middleware;
 
 use App\Domain\AppDev\RuntimeConvergenceException;
+use App\Domain\Firewall\FirewallOperationException;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Nodes\NodeRemovalException;
+use App\Domain\Nodes\RoleAssignmentException;
+use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Shared\ResourceOperationException;
 use App\Infrastructure\Activity\CommandActivityInputSanitizer;
 use App\Infrastructure\Activity\CommandActivityTargetResolver;
@@ -13,6 +17,7 @@ use App\Infrastructure\Processes\CommandDeadline;
 use App\Infrastructure\Processes\CommandResult;
 use App\Models\Activity;
 use App\Models\Node;
+use App\Models\Process;
 use Closure;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
@@ -22,7 +27,10 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
-/** @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware. */
+/**
+ * @mago-expect lint:cyclomatic-complexity Command activity maps each bounded domain failure explicitly.
+ * @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware.
+ */
 final readonly class RecordCommandActivity
 {
     public function __construct(
@@ -102,8 +110,9 @@ final readonly class RecordCommandActivity
         ];
 
         $activity->update($this->withTarget(
+            $activity,
             $request,
-            $this->withResult($activity, $updates, $commandResult),
+            $this->withResult($activity, $request, $updates, $commandResult),
         ));
     }
 
@@ -119,21 +128,29 @@ final readonly class RecordCommandActivity
             'error_code' => match (true) {
                 $exception instanceof ValidationException => 'validation.failed',
                 $exception instanceof NodeProvisioningException => $exception->errorCode,
+                $exception instanceof NodeRemovalException => $exception->errorCode,
                 $exception instanceof RuntimeConvergenceException => $exception->errorCode,
+                $exception instanceof ProcessOperationException => $exception->errorCode,
+                $exception instanceof FirewallOperationException => $exception->errorCode,
                 $exception instanceof ResourceOperationException => $exception->errorCode,
+                $exception instanceof RoleAssignmentException => 'node.role_conflict',
                 $exception instanceof ModelNotFoundException, $exception instanceof NotFoundHttpException => 'http.404',
                 default => 'gateway.unhandled',
             },
         ];
         $result = match (true) {
             $exception instanceof NodeProvisioningException => $exception->result,
+            $exception instanceof NodeRemovalException => $exception->result,
             $exception instanceof RuntimeConvergenceException => $exception->result,
+            $exception instanceof ProcessOperationException => $exception->result,
+            $exception instanceof FirewallOperationException => $exception->result,
             default => null,
         };
 
         $activity->update($this->withTarget(
+            $activity,
             $request,
-            $this->withResult($activity, $updates, $result),
+            $this->withResult($activity, $request, $updates, $result),
         ));
     }
 
@@ -142,8 +159,12 @@ final readonly class RecordCommandActivity
      *
      * @return array<string, mixed>
      */
-    private function withResult(Activity $activity, array $updates, mixed $result): array
-    {
+    private function withResult(
+        Activity $activity,
+        Request $request,
+        array $updates,
+        mixed $result,
+    ): array {
         if (! $result instanceof CommandResult) {
             return $updates;
         }
@@ -153,8 +174,8 @@ final readonly class RecordCommandActivity
             'exit_code' => $result->exitCode,
             'properties' => [
                 ...($activity->properties?->toArray() ?? []),
-                'stdout' => $this->redact($result->stdout),
-                'stderr' => $this->redact($result->stderr),
+                'stdout' => $this->redact($request, $result->stdout),
+                'stderr' => $this->redact($request, $result->stderr),
                 'output_truncated' => $result->truncated,
             ],
         ];
@@ -191,20 +212,83 @@ final readonly class RecordCommandActivity
      * @param array<string, mixed> $updates
      *
      * @return array<string, mixed>
+     *
+     * @mago-expect analysis:mixed-assignment Request attributes are an untyped transport boundary.
      */
-    private function withTarget(Request $request, array $updates): array
+    private function withTarget(Activity $activity, Request $request, array $updates): array
     {
         $target = $this->targetResolver->resolve($request);
 
-        if ($target === null) {
+        if ($target !== null) {
+            $updates = [...$updates, ...$target];
+        }
+
+        $snapshot = $request->attributes->get('orbit.target_node_snapshot');
+
+        if (
+            ! is_array($snapshot)
+            || ! is_int($snapshot['id'] ?? null)
+            || ! is_string($snapshot['name'] ?? null)
+        ) {
             return $updates;
         }
 
-        return [...$updates, ...$target];
+        /** @var array<string, mixed> $properties */
+        $properties = is_array($updates['properties'] ?? null)
+            ? $updates['properties']
+            : $activity->properties?->toArray() ?? [];
+
+        return [
+            ...$updates,
+            'properties' => [
+                ...$properties,
+                'target_node' => [
+                    'id' => $snapshot['id'],
+                    'name' => $snapshot['name'],
+                ],
+            ],
+        ];
     }
 
-    private function redact(string $output): string
+    private function redact(Request $request, string $output): string
     {
-        return $this->inputSanitizer->redactText($output);
+        $redacted = $this->inputSanitizer->redactText($output);
+        $values = $this->environmentSecretValues($request);
+
+        return str_replace(search: $values, replace: '[REDACTED]', subject: $redacted);
+    }
+
+    /**
+     * @return list<string>
+     *
+     * @mago-expect analysis:mixed-assignment Request and persisted JSON values are untyped transport boundaries.
+     */
+    private function environmentSecretValues(Request $request): array
+    {
+        $process = $request->route('process');
+        $storedEnvironment = $process instanceof Process
+            ? $process->runtime_config['environment'] ?? null
+            : null;
+        /** @var list<string> $values */
+        $values = [];
+
+        foreach ([$request->input('environment'), $storedEnvironment] as $environment) {
+            if (! is_array($environment)) {
+                continue;
+            }
+
+            foreach ($environment as $value) {
+                if (! is_string($value) || $value === '') {
+                    continue;
+                }
+
+                $values[] = $value;
+            }
+        }
+
+        $values = array_values(array_unique($values));
+        usort($values, static fn (string $first, string $second): int => strlen($second) <=> strlen($first));
+
+        return $values;
     }
 }

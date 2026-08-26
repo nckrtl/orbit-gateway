@@ -72,10 +72,56 @@ it('recursively redacts sensitive input and URL userinfo before persistence', fu
         ->not->toContain($repositoryPassword, $nestedToken, $nestedPassword);
 });
 
+it('redacts secret repository query parameters before persistence and activity serialization', function (): void {
+    $requestId = (string) Str::uuid();
+    $repositoryUrl = 'https://example.test/repo.git?token=sentinel&branch=main';
+    $redactedRepositoryUrl = 'https://example.test/repo.git?token=[REDACTED]&branch=main';
+    Node::query()->create([
+        'name' => 'operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.2',
+        'wireguard_address' => '10.44.0.2',
+    ]);
+
+    $failure = $this
+        ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
+        ->withHeader('X-Orbit-Request-Id', $requestId)
+        ->postJson('/api/v1/apps', [
+            'slug' => '../invalid',
+            'repository_url' => $repositoryUrl,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed');
+    $activity = Activity::query()->where('request_id', $requestId)->sole();
+    $properties = $activity->properties?->toArray() ?? [];
+    $debugOutput = print_r($properties, return: true);
+
+    expect($properties['input']['repository_url'] ?? null)
+        ->toBe($redactedRepositoryUrl)
+        ->and($failure->getContent())
+        ->not->toContain('sentinel')->and($debugOutput)
+        ->not->toContain('sentinel');
+
+    $serialized = $this
+        ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
+        ->getJson("/api/v1/activities/{$activity->id}")
+        ->assertOk()
+        ->assertJsonPath('data.properties.input.repository_url', $redactedRepositoryUrl);
+
+    expect($serialized->getContent())->not->toContain('sentinel');
+});
+
 it('records route model binding failures as http 404', function (): void {
     $requestId = (string) Str::uuid();
+    Node::query()->create([
+        'name' => 'operator',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.2',
+        'wireguard_address' => '10.44.0.2',
+    ]);
 
     $this
+        ->withServerVariables(['REMOTE_ADDR' => '10.44.0.2'])
         ->withHeader('X-Orbit-Request-Id', $requestId)
         ->getJson('/api/v1/apps/999999')
         ->assertNotFound()

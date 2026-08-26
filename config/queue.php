@@ -14,7 +14,7 @@ return [
      |
      */
 
-    'default' => env('QUEUE_CONNECTION', 'database'),
+    'default' => env(key: 'QUEUE_CONNECTION', default: 'database'),
 
     /*
      |--------------------------------------------------------------------------
@@ -38,17 +38,17 @@ return [
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
-            'table' => env('DB_QUEUE_TABLE', 'jobs'),
-            'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            'table' => env(key: 'DB_QUEUE_TABLE', default: 'jobs'),
+            'queue' => env(key: 'DB_QUEUE', default: 'default'),
+            'retry_after' => (int) env(key: 'DB_QUEUE_RETRY_AFTER', default: 90),
             'after_commit' => false,
         ],
 
         'beanstalkd' => [
             'driver' => 'beanstalkd',
-            'host' => env('BEANSTALKD_QUEUE_HOST', 'localhost'),
-            'queue' => env('BEANSTALKD_QUEUE', 'default'),
-            'retry_after' => (int) env('BEANSTALKD_QUEUE_RETRY_AFTER', 90),
+            'host' => env(key: 'BEANSTALKD_QUEUE_HOST', default: 'localhost'),
+            'queue' => env(key: 'BEANSTALKD_QUEUE', default: 'default'),
+            'retry_after' => (int) env(key: 'BEANSTALKD_QUEUE_RETRY_AFTER', default: 90),
             'block_for' => 0,
             'after_commit' => false,
         ],
@@ -57,18 +57,21 @@ return [
             'driver' => 'sqs',
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
-            'prefix' => env('SQS_PREFIX', 'https://sqs.us-east-1.amazonaws.com/your-account-id'),
-            'queue' => env('SQS_QUEUE', 'default'),
+            'prefix' => env(
+                key: 'SQS_PREFIX',
+                default: 'https://sqs.us-east-1.amazonaws.com/your-account-id',
+            ),
+            'queue' => env(key: 'SQS_QUEUE', default: 'default'),
             'suffix' => env('SQS_SUFFIX'),
-            'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+            'region' => env(key: 'AWS_DEFAULT_REGION', default: 'us-east-1'),
             'after_commit' => false,
         ],
 
         'redis' => [
             'driver' => 'redis',
-            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
-            'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            'connection' => env(key: 'REDIS_QUEUE_CONNECTION', default: 'default'),
+            'queue' => env(key: 'REDIS_QUEUE', default: 'default'),
+            'retry_after' => (int) env(key: 'REDIS_QUEUE_RETRY_AFTER', default: 90),
             'block_for' => null,
             'after_commit' => false,
         ],
@@ -102,7 +105,7 @@ return [
      */
 
     'batching' => [
-        'database' => env('DB_CONNECTION', 'sqlite'),
+        'database' => env(key: 'DB_CONNECTION', default: 'sqlite'),
         'table' => 'job_batches',
     ],
 
@@ -120,8 +123,8 @@ return [
      */
 
     'failed' => [
-        'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
-        'database' => env('DB_CONNECTION', 'sqlite'),
+        'driver' => env(key: 'QUEUE_FAILED_DRIVER', default: 'database-uuids'),
+        'database' => env(key: 'DB_CONNECTION', default: 'sqlite'),
         'table' => 'failed_jobs',
     ],
 ];

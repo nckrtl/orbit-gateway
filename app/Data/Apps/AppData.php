@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Data\Apps;
 
+use App\Infrastructure\Activity\CommandActivityInputSanitizer;
 use App\Models\App as OrbitApp;
 use Spatie\LaravelData\Attributes\MapOutputName;
 use Spatie\LaravelData\Data;
@@ -28,7 +29,21 @@ final class AppData extends Data
             name: $app->name,
             slug: $app->slug,
             repositoryUrl: $app->repository_url,
-            defaults: $app->defaults,
+            defaults: self::publicDefaults($app->defaults),
         );
+    }
+
+    /**
+     * @param array<string, mixed>|null $defaults
+     *
+     * @return array<array-key, mixed>|null
+     */
+    private static function publicDefaults(?array $defaults): ?array
+    {
+        if ($defaults === null) {
+            return null;
+        }
+
+        return new CommandActivityInputSanitizer()->sanitizeProperties($defaults);
     }
 }

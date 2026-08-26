@@ -9,9 +9,23 @@ use App\Domain\Shared\LifecycleStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $node_id
+ * @property string $name
+ * @property FirewallAction $action
+ * @property string $source
+ * @property string $protocol
+ * @property string $port
+ * @property LifecycleStatus $status
+ * @property string|null $failed_step
+ * @property string|null $error_code
+ * @property-read Node $node
+ */
 final class FirewallRule extends Model
 {
     /** @var array<int, string> */
+    #[\Override]
     protected $fillable = [
         'node_id',
         'name',

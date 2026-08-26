@@ -15,7 +15,7 @@ return [
      |
      */
 
-    'default' => env('MAIL_MAILER', 'log'),
+    'default' => env(key: 'MAIL_MAILER', default: 'log'),
 
     /*
      |--------------------------------------------------------------------------
@@ -41,13 +41,13 @@ return [
             'transport' => 'smtp',
             'scheme' => env('MAIL_SCHEME'),
             'url' => env('MAIL_URL'),
-            'host' => env('MAIL_HOST', '127.0.0.1'),
-            'port' => env('MAIL_PORT', 2525),
+            'host' => env(key: 'MAIL_HOST', default: '127.0.0.1'),
+            'port' => env(key: 'MAIL_PORT', default: 2525),
             'username' => env('MAIL_USERNAME'),
             'password' => env('MAIL_PASSWORD'),
             'timeout' => null,
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url(
-                (string) env('APP_URL', 'http://localhost'),
+                (string) env(key: 'APP_URL', default: 'http://localhost'),
                 PHP_URL_HOST,
             )),
         ],
@@ -70,7 +70,7 @@ return [
 
         'sendmail' => [
             'transport' => 'sendmail',
-            'path' => env('MAIL_SENDMAIL_PATH', '/usr/sbin/sendmail -bs -i'),
+            'path' => env(key: 'MAIL_SENDMAIL_PATH', default: '/usr/sbin/sendmail -bs -i'),
         ],
 
         'log' => [
@@ -113,7 +113,10 @@ return [
      */
 
     'from' => [
-        'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
-        'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
+        'address' => env(key: 'MAIL_FROM_ADDRESS', default: 'hello@example.com'),
+        'name' => env(
+            key: 'MAIL_FROM_NAME',
+            default: env(key: 'APP_NAME', default: 'Laravel'),
+        ),
     ],
 ];

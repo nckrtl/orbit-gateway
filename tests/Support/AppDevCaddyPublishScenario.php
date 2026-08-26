@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Support;
 
+/** @mago-expect lint:excessive-parameter-list Explicit flags define complete Caddy publication failure scenarios. */
 final readonly class AppDevCaddyPublishScenario
 {
     /** @param array<string, string> $existingOrbitFragments */
@@ -13,6 +14,7 @@ final readonly class AppDevCaddyPublishScenario
         public array $existingOrbitFragments,
         public bool $liveIsOrbitAggregate,
         public bool $failValidation,
+        public bool $failActivation,
     ) {}
 
     public static function packageDefault(string $liveMain, string $packageDefault): self
@@ -23,6 +25,7 @@ final readonly class AppDevCaddyPublishScenario
             existingOrbitFragments: [],
             liveIsOrbitAggregate: false,
             failValidation: false,
+            failActivation: false,
         );
     }
 
@@ -35,6 +38,7 @@ final readonly class AppDevCaddyPublishScenario
             existingOrbitFragments: $existingOrbitFragments,
             liveIsOrbitAggregate: true,
             failValidation: false,
+            failActivation: false,
         );
     }
 
@@ -46,6 +50,7 @@ final readonly class AppDevCaddyPublishScenario
             existingOrbitFragments: [],
             liveIsOrbitAggregate: false,
             failValidation: false,
+            failActivation: false,
         );
     }
 
@@ -57,6 +62,34 @@ final readonly class AppDevCaddyPublishScenario
             existingOrbitFragments: [],
             liveIsOrbitAggregate: false,
             failValidation: true,
+            failActivation: false,
+        );
+    }
+
+    /** @param array<string, string> $existingOrbitFragments */
+    public static function orbitAggregateWithActivationFailure(
+        string $liveMain,
+        array $existingOrbitFragments,
+    ): self {
+        return new self(
+            liveMain: $liveMain,
+            packageDefault: null,
+            existingOrbitFragments: $existingOrbitFragments,
+            liveIsOrbitAggregate: true,
+            failValidation: false,
+            failActivation: true,
+        );
+    }
+
+    public static function modifiedConfigWithActivationFailure(string $liveMain, string $packageDefault): self
+    {
+        return new self(
+            liveMain: $liveMain,
+            packageDefault: $packageDefault,
+            existingOrbitFragments: [],
+            liveIsOrbitAggregate: false,
+            failValidation: false,
+            failActivation: true,
         );
     }
 }

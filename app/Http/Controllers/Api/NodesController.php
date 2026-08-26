@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Actions\Nodes\ListNodesAction;
 use App\Actions\Nodes\ProvisionNodeAction;
+use App\Actions\Nodes\RemoveNodeAction;
 use App\Actions\Nodes\ShowNodeAction;
 use App\Data\Nodes\NodeData;
 use App\Http\Controllers\Controller;
@@ -33,6 +34,26 @@ final class NodesController extends Controller
     {
         return response()->json([
             'data' => NodeData::fromModel($action->handle($node))->toArray(),
+            'meta' => ['request_id' => $request->attributes->getString('orbit.request_id')],
+        ]);
+    }
+
+    /** @mago-expect analysis:mixed-assignment The authenticated peer resolver returns a Node. */
+    public function destroy(Request $request, Node $node, RemoveNodeAction $action): JsonResponse
+    {
+        $caller = $request->user();
+
+        if (! $caller instanceof Node) {
+            abort(403);
+        }
+
+        $request->attributes->set('orbit.target_node_snapshot', [
+            'id' => $node->id,
+            'name' => $node->name,
+        ]);
+
+        return response()->json([
+            'data' => $action->execute($node, $caller)->toArray(),
             'meta' => ['request_id' => $request->attributes->getString('orbit.request_id')],
         ]);
     }

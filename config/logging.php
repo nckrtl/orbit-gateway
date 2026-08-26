@@ -19,7 +19,7 @@ return [
      |
      */
 
-    'default' => env('LOG_CHANNEL', 'stack'),
+    'default' => env(key: 'LOG_CHANNEL', default: 'stack'),
 
     /*
      |--------------------------------------------------------------------------
@@ -33,8 +33,8 @@ return [
      */
 
     'deprecations' => [
-        'channel' => env('LOG_DEPRECATIONS_CHANNEL', 'null'),
-        'trace' => env('LOG_DEPRECATIONS_TRACE', false),
+        'channel' => env(key: 'LOG_DEPRECATIONS_CHANNEL', default: 'null'),
+        'trace' => env(key: 'LOG_DEPRECATIONS_TRACE', default: false),
     ],
 
     /*
@@ -54,29 +54,29 @@ return [
     'channels' => [
         'stack' => [
             'driver' => 'stack',
-            'channels' => explode(',', (string) env('LOG_STACK', 'single')),
+            'channels' => explode(',', (string) env(key: 'LOG_STACK', default: 'single')),
             'ignore_exceptions' => false,
         ],
 
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'replace_placeholders' => true,
         ],
 
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
-            'max_files' => env('LOG_DAILY_DAYS', 14),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
+            'max_files' => env(key: 'LOG_DAILY_DAYS', default: 14),
             'replace_placeholders' => true,
         ],
 
         'monthly' => [
             'driver' => 'monthly',
             'path' => storage_path('logs/laravel.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'max_files' => 3,
             'replace_placeholders' => true,
         ],
@@ -84,15 +84,18 @@ return [
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
-            'username' => env('LOG_SLACK_USERNAME', env('APP_NAME', 'Laravel')),
-            'emoji' => env('LOG_SLACK_EMOJI', ':boom:'),
-            'level' => env('LOG_LEVEL', 'critical'),
+            'username' => env(
+                key: 'LOG_SLACK_USERNAME',
+                default: env(key: 'APP_NAME', default: 'Laravel'),
+            ),
+            'emoji' => env(key: 'LOG_SLACK_EMOJI', default: ':boom:'),
+            'level' => env(key: 'LOG_LEVEL', default: 'critical'),
             'replace_placeholders' => true,
         ],
 
         'papertrail' => [
             'driver' => 'monolog',
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'handler' => env('LOG_PAPERTRAIL_HANDLER', SyslogUdpHandler::class),
             'handler_with' => [
                 'host' => env('PAPERTRAIL_URL'),
@@ -104,7 +107,7 @@ return [
 
         'stderr' => [
             'driver' => 'monolog',
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'handler' => StreamHandler::class,
             'handler_with' => [
                 'stream' => 'php://stderr',
@@ -115,14 +118,14 @@ return [
 
         'syslog' => [
             'driver' => 'syslog',
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'facility' => env('LOG_SYSLOG_FACILITY', LOG_USER),
             'replace_placeholders' => true,
         ],
 
         'errorlog' => [
             'driver' => 'errorlog',
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env(key: 'LOG_LEVEL', default: 'debug'),
             'replace_placeholders' => true,
         ],
 

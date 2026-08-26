@@ -26,6 +26,12 @@ final class StoreInstanceRequest extends FormRequest
                 'regex:/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/',
             ],
             'environment' => ['sometimes', 'string', 'alpha_dash:ascii', 'max:63'],
+            'hostname' => [
+                'sometimes',
+                'string',
+                'max:253',
+                'regex:/\A(?=.{4,253}\z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\z/',
+            ],
             'document_root' => [
                 'sometimes',
                 'string',
@@ -45,13 +51,12 @@ final class StoreInstanceRequest extends FormRequest
             appId: (int) $validated['app_id'],
             nodeId: (int) $validated['node_id'],
             name: (string) $validated['name'],
-            environment: is_string($validated['environment'] ?? null)
-                ? $validated['environment']
-                : 'development',
+            environment: is_string($validated['environment'] ?? null) ? $validated['environment'] : null,
             documentRoot: is_string($validated['document_root'] ?? null)
                 ? $validated['document_root']
                 : 'public',
             phpVersion: is_string($validated['php_version'] ?? null) ? $validated['php_version'] : '8.5',
+            hostname: is_string($validated['hostname'] ?? null) ? $validated['hostname'] : null,
         );
     }
 }
