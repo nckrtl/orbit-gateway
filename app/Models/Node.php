@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Domain\Shared\LifecycleStatus;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -24,6 +25,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string|null $dns_server_override
  * @property string|null $ssh_host_fingerprint
  * @property-read \Illuminate\Database\Eloquent\Collection<int, NodeRole> $roles
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, Node> $accessibleNodes
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, Node> $accessingNodes
  */
 final class Node extends Model
 {
@@ -71,6 +74,28 @@ final class Node extends Model
     public function firewallRules(): HasMany
     {
         return $this->hasMany(FirewallRule::class);
+    }
+
+    /** @return BelongsToMany<Node, $this> */
+    public function accessibleNodes(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            self::class,
+            'node_access',
+            'consumer_node_id',
+            'serving_node_id',
+        )->withTimestamps();
+    }
+
+    /** @return BelongsToMany<Node, $this> */
+    public function accessingNodes(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            self::class,
+            'node_access',
+            'serving_node_id',
+            'consumer_node_id',
+        )->withTimestamps();
     }
 
     /** @return array<string, string> */

@@ -7,6 +7,7 @@ use App\Domain\Processes\ProcessRuntime;
 use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
+use App\Models\NodeAccess;
 use App\Models\Process;
 use App\Models\Workspace;
 use Illuminate\Database\QueryException;
@@ -88,4 +89,103 @@ it('enforces at most one app instance on each node', function (): void {
         'certificate_mode' => CertificateMode::OrbitCa,
     ]))
         ->toThrow(QueryException::class);
+});
+
+describe('node access persistence', function (): void {
+    it('stores directed access between consumer and serving nodes', function (): void {
+        $consumer = Node::query()->create([
+            'name' => 'consumer',
+            'public_ssh_host' => '192.0.2.10',
+        ]);
+        $serving = Node::query()->create([
+            'name' => 'serving',
+            'public_ssh_host' => '192.0.2.11',
+        ]);
+
+        $consumer->accessibleNodes()->attach($serving);
+
+        expect($consumer->accessibleNodes()->sole()->is($serving))
+            ->toBeTrue()
+            ->and($serving->accessingNodes()->sole()->is($consumer))
+            ->toBeTrue()
+            ->and($consumer->accessingNodes()->exists())
+            ->toBeFalse()
+            ->and($serving->accessibleNodes()->exists())
+            ->toBeFalse();
+    });
+
+    it('rejects duplicate directed access pairs', function (): void {
+        $consumer = Node::query()->create([
+            'name' => 'consumer',
+            'public_ssh_host' => '192.0.2.10',
+        ]);
+        $serving = Node::query()->create([
+            'name' => 'serving',
+            'public_ssh_host' => '192.0.2.11',
+        ]);
+        $access = NodeAccess::query()->create([
+            'consumer_node_id' => $consumer->id,
+            'serving_node_id' => $serving->id,
+        ]);
+
+        expect($access->consumer)
+            ->toBeInstanceOf(Node::class)
+            ->and($access->consumer->is($consumer))
+            ->toBeTrue()
+            ->and($access->serving)
+            ->toBeInstanceOf(Node::class)
+            ->and($access->serving->is($serving))
+            ->toBeTrue();
+
+        expect(fn () => NodeAccess::query()->create([
+            'consumer_node_id' => $consumer->id,
+            'serving_node_id' => $serving->id,
+        ]))
+            ->toThrow(QueryException::class);
+    });
+
+    it('removes access rows when the consumer node is deleted', function (): void {
+        $consumer = Node::query()->create([
+            'name' => 'consumer',
+            'public_ssh_host' => '192.0.2.10',
+        ]);
+        $firstServing = Node::query()->create([
+            'name' => 'first-serving',
+            'public_ssh_host' => '192.0.2.11',
+        ]);
+        $secondServing = Node::query()->create([
+            'name' => 'second-serving',
+            'public_ssh_host' => '192.0.2.12',
+        ]);
+        $consumer->accessibleNodes()->attach([$firstServing->id, $secondServing->id]);
+
+        $consumer->delete();
+
+        $this->assertDatabaseMissing('node_access', [
+            'consumer_node_id' => $consumer->id,
+        ]);
+    });
+
+    it('removes access rows when the serving node is deleted', function (): void {
+        $firstConsumer = Node::query()->create([
+            'name' => 'first-consumer',
+            'public_ssh_host' => '192.0.2.10',
+        ]);
+        $secondConsumer = Node::query()->create([
+            'name' => 'second-consumer',
+            'public_ssh_host' => '192.0.2.11',
+        ]);
+        $serving = Node::query()->create([
+            'name' => 'serving',
+            'public_ssh_host' => '192.0.2.12',
+        ]);
+        $firstConsumer->accessibleNodes()->attach($serving);
+        $secondConsumer->accessibleNodes()->attach($serving);
+
+        $serving->delete();
+
+        $this->assertDatabaseMissing('node_access', [
+            'serving_node_id' => $serving->id,
+        ]);
+    });
 });
