@@ -23,17 +23,28 @@ final readonly class RoleRegistry
             RoleName::Gateway => new RoleDefinition(
                 name: $role,
                 singleton: true,
+                assignableDuringProvisioning: true,
+                mutable: false,
                 conflicts: [RoleName::AppDev, RoleName::AppProd],
             ),
-            RoleName::Vpn => new RoleDefinition(name: $role, singleton: true),
+            RoleName::Vpn => new RoleDefinition(
+                name: $role,
+                singleton: true,
+                assignableDuringProvisioning: true,
+                mutable: false,
+            ),
             RoleName::AppDev => new RoleDefinition(
                 name: $role,
                 singleton: false,
+                assignableDuringProvisioning: true,
+                mutable: true,
                 conflicts: [RoleName::Gateway, RoleName::AppProd],
             ),
             RoleName::AppProd => new RoleDefinition(
                 name: $role,
                 singleton: false,
+                assignableDuringProvisioning: true,
+                mutable: true,
                 conflicts: [RoleName::Gateway, RoleName::AppDev],
             ),
         };

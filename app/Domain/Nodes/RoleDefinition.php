@@ -10,6 +10,8 @@ final readonly class RoleDefinition
     public function __construct(
         public RoleName $name,
         public bool $singleton,
+        public bool $assignableDuringProvisioning,
+        public bool $mutable,
         public array $conflicts = [],
     ) {}
 }

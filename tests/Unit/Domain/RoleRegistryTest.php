@@ -6,7 +6,7 @@ use App\Domain\Nodes\RoleName;
 use App\Domain\Nodes\RoleRegistry;
 
 describe(RoleRegistry::class, function (): void {
-    it('defines the four version-one roles and their placement rules', function (): void {
+    it('defines the four version-one roles and their lifecycle policy', function (): void {
         $registry = new RoleRegistry;
 
         expect($registry->names())
@@ -18,11 +18,39 @@ describe(RoleRegistry::class, function (): void {
             ])
             ->and($registry->definition(RoleName::Gateway)->singleton)
             ->toBeTrue()
+            ->and($registry->definition(RoleName::Gateway)->assignableDuringProvisioning)
+            ->toBeTrue()
+            ->and($registry->definition(RoleName::Gateway)->mutable)
+            ->toBeFalse()
             ->and($registry->definition(RoleName::Vpn)->singleton)
             ->toBeTrue()
+            ->and($registry->definition(RoleName::Vpn)->assignableDuringProvisioning)
+            ->toBeTrue()
+            ->and($registry->definition(RoleName::Vpn)->mutable)
+            ->toBeFalse()
             ->and($registry->definition(RoleName::AppDev)->singleton)
             ->toBeFalse()
+            ->and($registry->definition(RoleName::AppDev)->assignableDuringProvisioning)
+            ->toBeTrue()
+            ->and($registry->definition(RoleName::AppDev)->mutable)
+            ->toBeTrue()
             ->and($registry->definition(RoleName::AppProd)->singleton)
+            ->toBeFalse()
+            ->and($registry->definition(RoleName::AppProd)->assignableDuringProvisioning)
+            ->toBeTrue()
+            ->and($registry->definition(RoleName::AppProd)->mutable)
+            ->toBeTrue();
+    });
+
+    it('requires every role definition to declare its lifecycle policy explicitly', function (): void {
+        $parameters = collect(
+            new ReflectionClass(App\Domain\Nodes\RoleDefinition::class)->getConstructor()?->getParameters() ?? [],
+        )
+            ->keyBy(static fn (ReflectionParameter $parameter): string => $parameter->getName());
+
+        expect($parameters->get('assignableDuringProvisioning')?->isDefaultValueAvailable())
+            ->toBeFalse()
+            ->and($parameters->get('mutable')?->isDefaultValueAvailable())
             ->toBeFalse();
     });
 
