@@ -9,4 +9,6 @@ use App\Models\Node;
 interface AppDevCaddyManager
 {
     public function converge(Node $node): void;
+
+    public function remove(Node $node): void;
 }

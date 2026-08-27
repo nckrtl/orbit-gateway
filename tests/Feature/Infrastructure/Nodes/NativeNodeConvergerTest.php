@@ -2,11 +2,10 @@
 
 declare(strict_types=1);
 
-use App\Domain\AppDev\AppDevCaddyManager;
-use App\Domain\AppDev\RuntimeConvergenceException;
+use App\Domain\Firewall\FirewallOperationException;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Nodes\NodeRoleFirewallManager;
 use App\Domain\Nodes\RoleName;
-use App\Infrastructure\Firewall\UfwStoredRuleProbe;
 use App\Infrastructure\Nodes\NativeNodeConverger;
 use App\Infrastructure\Nodes\NodeBootstrapCommandFactory;
 use App\Infrastructure\Processes\CommandResult;
@@ -22,10 +21,11 @@ use App\Models\Node;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
-use Tests\Support\NodeExecutingInactiveUfwSshExecutor;
 
 it('fails closed before SSH when no host adapter supports the node platform', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
+
+    $node = base_provisionable_node();
     $node->update(['platform' => 'windows']);
     $scans = 0;
     $scanner = new class($scans) implements HostKeyScanner {
@@ -40,22 +40,13 @@ it('fails closed before SSH when no host adapter supports the node platform', fu
             return new HostKey('ssh-ed25519', 'PUBLICKEY', 'SHA256:pinned');
         }
     };
-    $converger = new NativeNodeConverger(
-        hostKeys: $scanner,
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
+    $converger = base_node_converger(
+        scanner: $scanner,
         ssh: new class implements SshExecutor {
             public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
             {
                 throw new LogicException('SSH must not run for an unsupported platform.');
             }
-        },
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
         },
     );
 
@@ -66,12 +57,11 @@ it('fails closed before SSH when no host adapter supports the node platform', fu
                 ->and($exception->errorCode)
                 ->toBe('node.platform_unsupported');
         });
-
     expect($scans)->toBe(0);
 });
 
 it('stops unsupported operating systems before the first bootstrap mutation', function (?string $release): void {
-    $result = run_node_bootstrap_preflight($release);
+    $result = run_base_bootstrap_preflight($release);
 
     expect($result->isSuccessful())
         ->toBeFalse()
@@ -86,61 +76,68 @@ it('stops unsupported operating systems before the first bootstrap mutation', fu
     'malformed codename' => "ID=ubuntu\nVERSION_CODENAME='resolute extra'\n",
 ]);
 
-it('reaches bootstrap operations only on Ubuntu Resolute', function (): void {
-    $command = node_bootstrap_command();
-    $result = run_node_bootstrap_preflight("ID=ubuntu\nVERSION_CODENAME=resolute\n");
+it('keeps the base bootstrap role-neutral with one fixed shared package list', function (): void {
+    $command = base_bootstrap_command();
     $script = $command->input ?? '';
-    $preflight = mb_strpos(haystack: $script, needle: 'Orbit requires Ubuntu 26.04 Resolute.');
-    $firstMutation = mb_strpos(haystack: $script, needle: 'apt-get update');
 
-    expect($result->isSuccessful())
-        ->toBeTrue()
-        ->and($result->getOutput())
-        ->toContain('mutation-reached')
+    expect($command->arguments)
+        ->toBe([
+            'bash',
+            '-seu',
+            '--',
+            'ssh-ed25519 GATEWAY',
+            'ca-certificates',
+            'curl',
+            'gnupg',
+            'openssh-client',
+            'sudo',
+            'ufw',
+            'wireguard',
+        ])
         ->and($script)
         ->toContain(
-            '[ ! -r /etc/os-release ]',
-            '. /etc/os-release',
-            '[ "${ID:-}" != ubuntu ]',
-            '[ "${VERSION_CODENAME:-}" != resolute ]',
+            'Orbit requires Ubuntu 26.04 Resolute.',
+            'useradd --create-home --shell /bin/bash orbit',
+            'install -d -m 0700 -o orbit -g orbit /home/orbit',
+            'orbit ALL=(ALL) NOPASSWD:ALL',
         )
-        ->and($command->arguments)
-        ->toContain('gnupg')
-        ->and($preflight)
-        ->toBeInt()
-        ->toBeLessThan($firstMutation)
-        ->and($firstMutation)
-        ->toBeInt();
+        ->not->toContain(
+            '/home/orbit/apps',
+            '/home/orbit/.orbit/worktrees',
+            'setfacl',
+            '/opt/orbit/vite-plus',
+            '/opt/orbit/bun',
+            'https://vite.plus',
+            'https://bun.com/install',
+            '/usr/local/bin/node',
+            'caddy',
+            'dnsmasq',
+            'docker.io',
+            'openssl',
+        );
 });
 
-it('pins the host and bootstraps verified orbit SSH access', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
+it('pins the host and converges only base node identity and connectivity', function (): void {
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
 
+    $node = base_provisionable_node();
     $knownHosts = new class implements KnownHostsStore {
-        public ?HostKey $key = null;
+        /** @var list<string> */
+        public array $hosts = [];
 
         public function path(): string
         {
-            return '/home/orbit/.orbit/ssh/known_hosts';
+            return '/tmp/orbit-known-hosts';
         }
 
         public function put(string $host, int $port, HostKey $key): void
         {
-            $this->key = $key;
+            $this->hosts[] = "{$host}:{$port}:{$key->fingerprint}";
         }
     };
-    $keys = test_keys();
-    $ssh = new class implements SshExecutor {
-        /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
-        public array $calls = [];
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            $this->calls[] = ['connection' => $connection, 'command' => $command];
-
-            return node_success_result($command);
-        }
-    };
+    $ssh = new BaseNodeSshExecutor;
+    $baseNodes = [];
+    $firewall = base_firewall_spy($baseNodes);
     $wireGuard = new class implements WireGuardPeerConverger {
         public bool $converged = false;
 
@@ -149,1051 +146,201 @@ it('pins the host and bootstraps verified orbit SSH access', function (): void {
             $this->converged = true;
         }
     };
-    $caddy = new class implements AppDevCaddyManager {
-        public bool $converged = false;
-
-        public function converge(Node $node): void
-        {
-            $this->converged = true;
-        }
-    };
     $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
+        hostKeys: base_test_scanner(),
         knownHosts: $knownHosts,
-        sshKeys: $keys,
+        sshKeys: base_test_keys(),
         ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory($keys),
+        bootstrapCommand: new NodeBootstrapCommandFactory(base_test_keys()),
         wireGuard: $wireGuard,
-        appDevCaddy: $caddy,
+        firewall: $firewall,
     );
 
     $converger->converge($node, 'SHA256:pinned');
-
-    $bootstrapArguments = $ssh->calls[0]['command']->arguments;
-    $bootstrapPackages = array_slice(array: $bootstrapArguments, offset: 6);
-    $bootstrapScript = $ssh->calls[0]['command']->input ?? '';
-    $phpPackages = array_values(array_filter(
-        array: $bootstrapPackages,
-        callback: static fn (string $package): bool => str_starts_with($package, 'php'),
-    ));
 
     expect($node->refresh()->ssh_user)
         ->toBe('orbit')
         ->and($node->ssh_host_fingerprint)
         ->toBe('SHA256:pinned')
-        ->and($knownHosts->key?->value)
-        ->toBe('PUBLICKEY')
+        ->and($knownHosts->hosts)
+        ->toBe([
+            '192.0.2.10:22:SHA256:pinned',
+            '10.44.0.2:22:SHA256:pinned',
+        ])
+        ->and($baseNodes)
+        ->toBe([$node->id])
         ->and($wireGuard->converged)
         ->toBeTrue()
-        ->and($caddy->converged)
-        ->toBeTrue()
         ->and($ssh->calls)
-        ->toHaveCount(5)
+        ->toHaveCount(3)
         ->and($ssh->calls[0]['connection']->user)
         ->toBe('root')
-        ->and(array_slice(array: $ssh->calls[0]['command']->arguments, offset: 0, length: 7))
-        ->toBe([
-            'bash',
-            '-seu',
-            '--',
-            'ssh-ed25519 GATEWAY',
-            '1',
-            '1',
-            'ca-certificates',
-        ])
-        ->and($bootstrapArguments)
-        ->toContain(
-            'curl',
-            'acl',
-            'attr',
-            'caddy',
-            'composer',
-            'docker.io',
-            'openssl',
-            'unzip',
-        )
-        ->and($phpPackages)
-        ->toBeEmpty()
-        ->and($bootstrapScript)
-        ->toContain(
-            'app_dev=$2',
-            'app_host=$3',
-            'shift 3',
-            'install -d -m 0700 -o orbit -g orbit /home/orbit',
-            'install -d -m 0755 -o orbit -g orbit /home/orbit/apps /home/orbit/.orbit/worktrees',
-            'setfacl -m u:caddy:--x /home/orbit /home/orbit/apps /home/orbit/.orbit /home/orbit/.orbit/worktrees',
-        )
-        ->and(mb_strpos(
-            haystack: $bootstrapScript,
-            needle: 'install -d -m 0700 -o orbit -g orbit /home/orbit',
-        ))
-        ->toBeLessThan(mb_strpos(
-            haystack: $bootstrapScript,
-            needle: 'setfacl -m u:caddy:--x /home/orbit',
-        ))
-        ->and($ssh->calls[1]['connection']->user)
-        ->toBe('orbit')
         ->and($ssh->calls[1]['command']->arguments)
         ->toBe(['true'])
         ->and($ssh->calls[2]['connection']->host)
-        ->toBe('94.237.40.75')
-        ->and($ssh->calls[2]['command']->arguments)
-        ->toBe(['sudo', 'ufw', 'status', 'numbered'])
-        ->and($ssh->calls[3]['command']->arguments)
-        ->toBe(['sudo', 'ufw', 'status', 'numbered'])
-        ->and($ssh->calls[4]['connection']->host)
         ->toBe('10.44.0.2')
-        ->and($ssh->calls[4]['command']->arguments)
+        ->and($ssh->calls[2]['command']->arguments)
         ->toBe(['true']);
 });
 
-it('builds stable JavaScript runtime launchers for application hosts', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
-    $syntax = new Process(['bash', '-n']);
-    $syntax->setInput($bootstrapScript);
-    $syntax->run();
+it('uses passwordless sudo for the same fixed base command when reconnecting as orbit', function (): void {
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
 
-    expect($bootstrapScript)
-        ->toContain(
-            'VP_HOME=/opt/orbit/vite-plus',
-            'https://vite.plus',
-            'env setup',
-            'env on',
-            'env install lts',
-            'env default lts',
-            'install -g --node lts pnpm',
-            'BUN_INSTALL=/opt/orbit/bun',
-            'https://bun.com/install',
-            '/usr/local/bin/vp',
-            '/usr/local/bin/node',
-            '/usr/local/bin/pnpm',
-            '/usr/local/bin/npm',
-            '/usr/local/bin/npx',
-            '/usr/local/bin/bun',
-            'export VP_HOME=/opt/orbit/vite-plus',
-        )
-        ->not
-        ->toContain('vp env install bun', 'npm install -g', 'bun install')
-        ->and($syntax->isSuccessful())
-        ->toBeTrue($syntax->getErrorOutput());
-});
-
-it('propagates failures from official runtime installer downloads', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
-
-    foreach (['https://vite.plus', 'https://bun.com/install'] as $installerUrl) {
-        $installerLine = collect(preg_split('/\R/', $bootstrapScript))
-            ->first(static fn (string $line): bool => str_contains($line, $installerUrl));
-
-        expect($installerLine)
-            ->toBeString()
-            ->toContain('bash -o pipefail -lc');
-
-        $failureCommand = preg_replace(
-            pattern: '/^sudo -u orbit -H env \S+ /',
-            replacement: '',
-            subject: trim($installerLine),
-        );
-        $failureCommand = str_replace(
-            search: "curl -fsSL {$installerUrl}",
-            replace: 'false',
-            subject: $failureCommand ?? '',
-        );
-        $failure = Process::fromShellCommandline($failureCommand);
-        $failure->run();
-
-        expect($failure->isSuccessful())->toBeFalse();
-    }
-});
-
-it('guards managed JavaScript paths before publishing stable entry points', function (): void {
-    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
-    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
-    $createOrbitUser = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'useradd --create-home --shell /bin/bash orbit',
-    );
-    $preflightRuntimeDirectory = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'Orbit JavaScript runtime directory conflict:',
-    );
-    $createRuntimeDirectory = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'install -d -m 0755 /opt/orbit',
-    );
-    $installVitePlus = mb_strpos(haystack: $bootstrapScript, needle: 'https://vite.plus');
-    $installNode = mb_strpos(haystack: $bootstrapScript, needle: 'env install lts');
-    $installPnpm = mb_strpos(haystack: $bootstrapScript, needle: 'install -g --node lts pnpm');
-    $installBun = mb_strpos(haystack: $bootstrapScript, needle: 'https://bun.com/install');
-    $preflightLaunchers = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'Orbit JavaScript runtime launcher conflict:',
-    );
-    $publishLaunchers = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'mv "$candidate" "$launcher"',
-    );
-    $validateLauncherTarget = mb_strpos(haystack: $bootstrapScript, needle: 'test -x "$target"');
-    $createCandidateDirectory = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'launcher_candidates=$(mktemp -d "/usr/local/bin/.orbit-js-runtime.XXXXXX")',
-    );
-    $preflightBun = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'Orbit JavaScript runtime link conflict:',
-    );
-    $publishBun = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'ln -s "$bun_binary" /usr/local/bin/bun',
-    );
-
-    expect($bootstrapScript)->toContain(
-        'stat -c \'%U:%G\' /opt/orbit',
-        'stat -c \'%U:%G\' "$directory"',
-        'stat -c \'%U:%G\' "$launcher"',
-        'stat -c \'%a\' "$launcher"',
-        'stat -c \'%U:%G\' /usr/local/bin/bun',
-        'candidate="$launcher_candidates/$binary"',
-        'cmp -s "$launcher" "$candidate"',
-        'chown root:root "$candidate"',
-        'published_paths=',
-        'rollback_javascript_runtime()',
-        'rm -f -- "$published_path"',
-        'trap rollback_javascript_runtime EXIT',
-        'published_paths="$published_paths $launcher"',
-        'published_paths="$published_paths /usr/local/bin/bun"',
-    );
-    expect($createOrbitUser)->toBeInt()->toBeLessThan($preflightRuntimeDirectory);
-    expect($preflightRuntimeDirectory)->toBeInt()->toBeLessThan($createRuntimeDirectory);
-    expect($createRuntimeDirectory)->toBeInt()->toBeLessThan($installVitePlus);
-    expect($installVitePlus)->toBeInt()->toBeLessThan($installNode);
-    expect($installNode)->toBeInt()->toBeLessThan($installPnpm);
-    expect($installPnpm)->toBeInt()->toBeLessThan($installBun);
-    expect($installBun)->toBeInt()->toBeLessThan($createCandidateDirectory);
-    expect($createCandidateDirectory)->toBeInt()->toBeLessThan($preflightLaunchers);
-    expect($validateLauncherTarget)->toBeInt()->toBeLessThan($preflightLaunchers);
-    expect($preflightLaunchers)->toBeInt()->toBeLessThan($publishLaunchers);
-    expect($preflightBun)->toBeInt()->toBeLessThan($publishLaunchers);
-    expect($preflightBun)->toBeInt()->toBeLessThan($publishBun);
-    expect(substr_count(haystack: $bootstrapScript, needle: '> "$candidate"'))->toBe(1);
-});
-
-it('rejects a foreign launcher before publishing any stable entry point', function (): void {
-    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
-    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
-
-    $harness = run_javascript_runtime_publication_harness(
-        bootstrapScript: $bootstrapScript,
-        foreignLauncher: 'npm',
-    );
-
-    try {
-        expect($harness['process']->isSuccessful())
-            ->toBeFalse()
-            ->and($harness['process']->getErrorOutput())
-            ->toContain("Orbit JavaScript runtime launcher conflict: {$harness['stableDirectory']}/npm")
-            ->and(file_get_contents("{$harness['stableDirectory']}/npm"))
-            ->toBe("foreign\n");
-
-        foreach (['vp', 'node', 'pnpm', 'npx', 'bun'] as $binary) {
-            expect("{$harness['stableDirectory']}/{$binary}")->not->toBeFile();
-        }
-    } finally {
-        new Filesystem()->deleteDirectory($harness['root']);
-    }
-});
-
-it('preserves exact launchers while rolling back new entry points after verification fails', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $bootstrapScript = new NodeBootstrapCommandFactory(test_keys())->make($node->load('roles'))->input ?? '';
-
-    $harness = run_javascript_runtime_publication_harness(
-        bootstrapScript: $bootstrapScript,
-        failingRuntime: 'npx',
-        exactLauncher: 'vp',
-    );
-
-    try {
-        expect($harness['process']->isSuccessful())
-            ->toBeFalse()
-            ->and(file_get_contents("{$harness['stableDirectory']}/vp"))
-            ->toBe($harness['exactLauncherContents']);
-
-        foreach (['node', 'pnpm', 'npm', 'npx', 'bun'] as $binary) {
-            expect("{$harness['stableDirectory']}/{$binary}")->not->toBeFile();
-        }
-    } finally {
-        new Filesystem()->deleteDirectory($harness['root']);
-    }
-});
-
-it('enables the JavaScript runtime only for application host roles', function (): void {
-    $factory = new NodeBootstrapCommandFactory(test_keys());
-    $appProd = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
-    $vpn = provisionable_node(role: RoleName::Vpn, name: 'vpn', wireguardAddress: '10.44.0.9');
-
-    expect($factory->make($appProd->load('roles'))->arguments[5])
-        ->toBe('1')
-        ->and($factory->make($vpn->load('roles'))->arguments[5])
-        ->toBe('0');
-});
-
-it('uses passwordless sudo for the fixed bootstrap command when reconnecting as orbit', function (): void {
-    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
-    $node->update([
-        'ssh_user' => 'orbit',
-        'ssh_host_fingerprint' => 'SHA256:pinned',
-    ]);
-    $keys = test_keys();
-    $bootstrapCommand = new NodeBootstrapCommandFactory($keys);
-    $expectedBootstrap = $bootstrapCommand->make($node->load('roles'));
-    $ssh = new class implements SshExecutor {
-        /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
-        public array $calls = [];
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            $this->calls[] = ['connection' => $connection, 'command' => $command];
-
-            return node_success_result($command);
-        }
-    };
+    $node = base_provisionable_node();
+    $node->update(['ssh_user' => 'orbit', 'ssh_host_fingerprint' => 'SHA256:pinned']);
+    $ssh = new BaseNodeSshExecutor;
+    $factory = new NodeBootstrapCommandFactory(base_test_keys());
+    $expected = $factory->make($node);
     $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: $keys,
+        hostKeys: base_test_scanner(),
+        knownHosts: base_test_known_hosts(),
+        sshKeys: base_test_keys(),
         ssh: $ssh,
-        bootstrapCommand: $bootstrapCommand,
+        bootstrapCommand: $factory,
         wireGuard: new class implements WireGuardPeerConverger {
             public function converge(Node $node, SshConnection $connection): void {}
         },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
+        firewall: base_firewall_spy(),
     );
 
     $converger->converge($node);
 
-    expect($ssh->calls[0]['connection']->user)
-        ->toBe('orbit')
-        ->and($ssh->calls[0]['command']->arguments)
-        ->toBe(['sudo', '-n', '--', ...$expectedBootstrap->arguments])
+    expect($ssh->calls[0]['command']->arguments)
+        ->toBe(['sudo', '-n', '--', ...$expected->arguments])
         ->and($ssh->calls[0]['command']->input)
-        ->toBe($expectedBootstrap->input)
-        ->and($ssh->calls[0]['command']->protectedInput)
-        ->toBeNull()
-        ->and($ssh->calls[1]['command']->arguments)
-        ->toBe(['true']);
+        ->toBe($expected->input);
 });
 
-it('reports a bounded bootstrap failure when passwordless sudo reconvergence fails', function (): void {
-    $node = provisionable_node(role: RoleName::AppProd, name: 'app-prod');
-    $node->update([
-        'ssh_user' => 'orbit',
-        'ssh_host_fingerprint' => 'SHA256:pinned',
-    ]);
-    $keys = test_keys();
-    $bootstrapCommand = new NodeBootstrapCommandFactory($keys);
-    $expectedBootstrap = $bootstrapCommand->make($node->load('roles'));
-    $failure = new CommandResult(1, '', 'sudo: a password is required', 10, false);
-    $ssh = new class($failure) implements SshExecutor {
-        /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
-        public array $calls = [];
+it('reports a bounded base bootstrap failure before later convergence', function (): void {
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
 
+    $node = base_provisionable_node();
+    $failure = new CommandResult(1, '', 'sudo failed', 10, false);
+    $ssh = new class($failure) implements SshExecutor {
         public function __construct(
             private CommandResult $failure,
         ) {}
 
         public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
         {
-            $this->calls[] = ['connection' => $connection, 'command' => $command];
-
             return $this->failure;
         }
     };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: $keys,
-        ssh: $ssh,
-        bootstrapCommand: $bootstrapCommand,
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void
-            {
-                throw new LogicException('WireGuard must not converge after bootstrap failure.');
-            }
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void
-            {
-                throw new LogicException('Caddy must not converge after bootstrap failure.');
-            }
-        },
-    );
+    $converger = base_node_converger($ssh);
 
-    expect(fn () => $converger->converge($node))
+    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
         ->toThrow(function (NodeProvisioningException $exception) use ($failure): void {
             expect($exception->step)
                 ->toBe('base-host')
                 ->and($exception->errorCode)
                 ->toBe('node.bootstrap_failed')
-                ->and($exception->getMessage())
-                ->toBe('Could not bootstrap node [app-prod].')
                 ->and($exception->result)
                 ->toBe($failure);
         });
-
-    expect($ssh->calls)
-        ->toHaveCount(1)
-        ->and($ssh->calls[0]['connection']->user)
-        ->toBe('orbit')
-        ->and($ssh->calls[0]['command']->arguments)
-        ->toBe(['sudo', '-n', '--', ...$expectedBootstrap->arguments])
-        ->and($ssh->calls[0]['command']->input)
-        ->toBe($expectedBootstrap->input);
 });
 
-it('preserves verified public SSH before enabling only required UFW role rules', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new NodeInactiveUfwSshExecutor;
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
+it('translates base firewall failures to node provisioning failures', function (): void {
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
 
-    $converger->converge($node, 'SHA256:pinned');
+    $node = base_provisionable_node();
+    $result = new CommandResult(1, '', 'ufw failed', 10, false);
+    $firewall = new class($result) implements NodeRoleFirewallManager {
+        public function __construct(
+            private CommandResult $result,
+        ) {}
 
-    $arguments = collect($ssh->calls)
-        ->map(static fn (array $call): array => $call['command']->arguments)
-        ->all();
+        public function convergeBase(Node $node): void
+        {
+            throw new FirewallOperationException(
+                step: 'host-firewall',
+                errorCode: 'node.firewall_convergence_failed',
+                message: 'Could not converge UFW.',
+                result: $this->result,
+            );
+        }
 
-    expect($ssh->calls[1]['command']->arguments)
-        ->toBe(['true'])
-        ->and($ssh->calls[1]['connection']->host)
-        ->toBe('94.237.40.75')
-        ->and(array_slice(array: $arguments, offset: 2, length: 9))
-        ->toBe([
-            ['sudo', 'ufw', 'status', 'numbered'],
-            $arguments[3],
-            [
-                'sudo',
-                'ufw',
-                'allow',
-                'in',
-                'proto',
-                'tcp',
-                'to',
-                'any',
-                'port',
-                '22',
-                'comment',
-                'orbit:public-ssh-recovery',
-            ],
-            $arguments[5],
-            ['sudo', 'ufw', '--force', 'enable'],
-            ['sudo', 'ufw', 'status', 'numbered'],
-            [
-                'sudo',
-                'ufw',
-                'allow',
-                'in',
-                'on',
-                'orbit',
-                'proto',
-                'tcp',
-                'to',
-                '10.44.0.2',
-                'port',
-                '80',
-                'comment',
-                'orbit:app-dev-http',
-            ],
-            [
-                'sudo',
-                'ufw',
-                'allow',
-                'in',
-                'on',
-                'orbit',
-                'proto',
-                'tcp',
-                'to',
-                '10.44.0.2',
-                'port',
-                '443',
-                'comment',
-                'orbit:app-dev-https',
-            ],
-            ['sudo', 'ufw', 'status', 'numbered'],
-        ])
-        ->and(array_slice(array: $arguments[3], offset: 0, length: 2))
-        ->toBe(['sudo', 'awk'])
-        ->and($arguments[3])
-        ->toContain('/etc/ufw/user.rules', '/etc/ufw/user6.rules')
-        ->and($arguments[5])
-        ->toBe($arguments[3])
-        ->and($arguments)
-        ->not->toContain(
-            ['sudo', 'ufw', 'reset'],
-            ['sudo', 'ufw', 'delete'],
-        );
-});
+        public function converge(Node $node, RoleName $role): void {}
 
-it('refuses to enable inactive node UFW when the stored recovery rule is missing', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new NodeInactiveUfwSshExecutor(failStoredRecovery: true);
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
+        public function remove(Node $node, RoleName $role): void {}
+    };
+    $converger = base_node_converger(new BaseNodeSshExecutor, firewall: $firewall);
 
     expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-        ->toThrow(function (NodeProvisioningException $exception): void {
+        ->toThrow(function (NodeProvisioningException $exception) use ($result): void {
             expect($exception->step)
                 ->toBe('host-firewall')
                 ->and($exception->errorCode)
-                ->toBe('node.firewall_convergence_failed');
+                ->toBe('node.firewall_convergence_failed')
+                ->and($exception->result)
+                ->toBe($result);
         });
-    $arguments = collect($ssh->calls)
-        ->map(static fn (array $call): array => $call['command']->arguments);
-
-    expect($arguments->contains(['sudo', 'ufw', '--force', 'enable']))
-        ->toBeFalse()
-        ->and($arguments->contains(
-            static fn (array $command): bool => in_array(
-                needle: 'orbit:app-dev-http',
-                haystack: $command,
-                strict: true,
-            ),
-        ))
-        ->toBeFalse();
 });
 
-it('fails closed before mutating inactive UFW when a stored app-dev comment has a broader shape', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new NodeInactiveUfwSshExecutor(storedRuleDrift: true);
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
-
-    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-        ->toThrow(function (NodeProvisioningException $exception): void {
-            expect($exception->step)
-                ->toBe('host-firewall')
-                ->and($exception->errorCode)
-                ->toBe('node.firewall_convergence_failed');
-        });
-    $mutations = collect($ssh->calls)
-        ->map(static fn (array $call): array => $call['command']->arguments)
-        ->filter(
-            static fn (array $arguments): bool => (
-                array_slice(array: $arguments, offset: 0, length: 2) === ['sudo', 'ufw']
-                && array_slice(array: $arguments, offset: 0, length: 3) !== ['sudo', 'ufw', 'status']
-            ),
-        );
-
-    expect($mutations)->toBeEmpty();
-});
-
-it('rejects a stored recovery rule restricted to the WireGuard interface before enabling UFW', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new NodeInactiveUfwSshExecutor(storedRecoveryWrongShape: true);
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
-
-    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-        ->toThrow(function (NodeProvisioningException $exception): void {
-            expect($exception->step)
-                ->toBe('host-firewall')
-                ->and($exception->errorCode)
-                ->toBe('node.firewall_convergence_failed');
-        });
-    $arguments = collect($ssh->calls)
-        ->map(static fn (array $call): array => $call['command']->arguments);
-    $mutations = $arguments->filter(
-        static fn (array $command): bool => (
-            array_slice(array: $command, offset: 0, length: 2) === ['sudo', 'ufw']
-            && array_slice(array: $command, offset: 0, length: 3) !== ['sudo', 'ufw', 'status']
-        ),
-    );
-
-    expect($mutations)->toBeEmpty();
-});
-
-it('executes stored rule inspection and rejects inactive recovery ownership drift before mutation', function (
-    array $ipv4Rules,
-    array $ipv6Rules,
+it('guards first-contact and stored SSH fingerprints before remote effects', function (
+    ?string $stored,
+    ?string $expected,
+    string $observed,
+    string $code,
 ): void {
-    $directory = sys_get_temp_dir().'/orbit-node-stored-ufw-'.Str::uuid();
-    mkdir(directory: $directory, permissions: 0o700);
-    $ipv4Path = $directory.'/user.rules';
-    $ipv6Path = $directory.'/user6.rules';
-    file_put_contents($ipv4Path, implode("\n", $ipv4Rules)."\n");
-    file_put_contents($ipv6Path, implode("\n", $ipv6Rules)."\n");
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new NodeExecutingInactiveUfwSshExecutor($ipv4Path, $ipv6Path);
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
+    expect(interface_exists(NodeRoleFirewallManager::class))->toBeTrue();
 
-    try {
-        expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-            ->toThrow(function (NodeProvisioningException $exception): void {
-                expect($exception->step)
-                    ->toBe('host-firewall')
-                    ->and($exception->errorCode)
-                    ->toBe('node.firewall_convergence_failed');
-            });
+    $node = base_provisionable_node();
+    $node->update(['ssh_host_fingerprint' => $stored]);
+    $calls = 0;
+    $ssh = new class($calls) implements SshExecutor {
+        public function __construct(
+            private int &$calls,
+        ) {}
 
-        $arguments = collect($ssh->calls)
-            ->map(static fn (array $call): array => $call['command']->arguments);
-        $mutations = $arguments->filter(
-            static fn (array $command): bool => (
-                array_slice(array: $command, offset: 0, length: 2) === ['sudo', 'ufw']
-                && array_slice(array: $command, offset: 0, length: 3) !== ['sudo', 'ufw', 'status']
-            ),
-        );
+        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+        {
+            $this->calls++;
 
-        expect($arguments->contains(UfwStoredRuleProbe::arguments()))
-            ->toBeTrue()
-            ->and($ssh->storedOutput)
-            ->toContain(
-                "__orbit_ufw_tuple:v4:{$ipv4Rules[0]}",
-                "__orbit_ufw_tuple:v6:{$ipv6Rules[0]}",
-            )
-            ->and($mutations)
-            ->toBeEmpty();
-    } finally {
-        new Filesystem()->deleteDirectory($directory);
-    }
+            return new CommandResult(0, '', '', 1, false);
+        }
+    };
+    $scanner = new class($observed) implements HostKeyScanner {
+        public function __construct(
+            private string $observed,
+        ) {}
+
+        public function scan(string $host, int $port): HostKey
+        {
+            return new HostKey('ssh-ed25519', 'PUBLICKEY', $this->observed);
+        }
+    };
+    $converger = base_node_converger($ssh, scanner: $scanner);
+
+    expect(fn () => $converger->converge($node, $expected))
+        ->toThrow(function (NodeProvisioningException $exception) use ($code): void {
+            expect($exception->step)
+                ->toBe('ssh-host-key')
+                ->and($exception->errorCode)
+                ->toBe($code);
+        });
+    expect($calls)->toBe(0);
 })->with([
-    'same-comment broader recovery shape' => function (): array {
-        $comment = bin2hex('orbit:public-ssh-recovery');
-
-        return [
-            ["### tuple ### allow tcp 1:65535 0.0.0.0/0 any 0.0.0.0/0 in comment={$comment}"],
-            ["### tuple ### allow tcp 22 ::/0 any ::/0 in comment={$comment}"],
-        ];
-    },
-    'duplicate exact IPv4 recovery ownership' => function (): array {
-        $comment = bin2hex('orbit:public-ssh-recovery');
-        $ipv4 = "### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in comment={$comment}";
-
-        return [
-            [$ipv4, $ipv4],
-            ["### tuple ### allow tcp 22 ::/0 any ::/0 in comment={$comment}"],
-        ];
-    },
+    'expected fingerprint is required' => [null, null, 'SHA256:pinned', 'node.ssh_host_fingerprint_required'],
+    'first-contact mismatch' => [null, 'SHA256:expected', 'SHA256:other', 'node.ssh_host_key_mismatch'],
+    'stored key changed' => ['SHA256:stored', null, 'SHA256:other', 'node.ssh_host_key_changed'],
 ]);
 
-it('does not reapply exact managed node role firewall rules', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $ssh = new class implements SshExecutor {
-        /** @var list<list<string>> */
-        public array $arguments = [];
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            $this->arguments[] = $command->arguments;
-
-            return node_success_result($command);
-        }
-    };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: new class implements WireGuardPeerConverger {
-            public function converge(Node $node, SshConnection $connection): void {}
-        },
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
-
-    $converger->converge($node, 'SHA256:pinned');
-    $ufwMutations = collect($ssh->arguments)
-        ->filter(
-            static fn (array $arguments): bool => (
-                array_slice(array: $arguments, offset: 0, length: 2) === ['sudo', 'ufw']
-                && array_slice(array: $arguments, offset: 0, length: 3) !== ['sudo', 'ufw', 'status']
-            ),
-        );
-
-    expect($ufwMutations)->toBeEmpty();
-});
-
-it('fails closed before mutating UFW when an app-dev comment identifies a broader rule', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $firewallMutations = [];
-    $ssh = new class($firewallMutations) implements SshExecutor {
-        /** @param list<list<string>> $firewallMutations */
-        public function __construct(
-            private array &$firewallMutations,
-        ) {}
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            if ($command->arguments === ['sudo', 'ufw', 'status', 'numbered']) {
-                return new CommandResult(
-                    0,
-                    <<<'UFW'
-                        Status: active
-
-                             To                         Action      From
-                             --                         ------      ----
-                        [ 1] 80/tcp                     ALLOW IN    Anywhere                   # orbit:app-dev-http
-                        UFW,
-                    '',
-                    10,
-                    false,
-                );
-            }
-
-            if (
-                array_slice(array: $command->arguments, offset: 0, length: 2) === ['sudo', 'ufw']
-                && array_slice(array: $command->arguments, offset: 0, length: 3) !== ['sudo', 'ufw', 'status']
-            ) {
-                $this->firewallMutations[] = $command->arguments;
-            }
-
-            return node_success_result($command);
-        }
-    };
-    $wireGuard = new class implements WireGuardPeerConverger {
-        public function converge(Node $node, SshConnection $connection): void {}
-    };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: $wireGuard,
-        appDevCaddy: new class implements AppDevCaddyManager {
-            public function converge(Node $node): void {}
-        },
-    );
-
-    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-        ->toThrow(function (NodeProvisioningException $exception): void {
-            expect($exception->step)
-                ->toBe('host-firewall')
-                ->and($exception->errorCode)
-                ->toBe('node.firewall_convergence_failed');
-        });
-
-    expect($firewallMutations)->toBeEmpty();
-});
-
-it('requires an expected fingerprint before first-contact SSH', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $knownHostsWrites = [];
-    $sshCalls = [];
-    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls);
-
-    expect(fn () => $converger->converge($node))
-        ->toThrow(function (NodeProvisioningException $exception): void {
-            expect($exception->step)
-                ->toBe('ssh-host-key')
-                ->and($exception->errorCode)
-                ->toBe('node.ssh_host_fingerprint_required');
-        });
-
-    expect($knownHostsWrites)
-        ->toBeEmpty()
-        ->and($sshCalls)
-        ->toBeEmpty()
-        ->and($node->refresh()->ssh_host_fingerprint)
-        ->toBeNull();
-});
-
-it('rejects a first-contact fingerprint mismatch before pinning or SSH', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $knownHostsWrites = [];
-    $sshCalls = [];
-    $expectedFingerprint = 'SHA256:'.str_repeat(string: 'A', times: 43);
-    $observedFingerprint = 'SHA256:'.str_repeat(string: 'B', times: 43);
-    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls, $observedFingerprint);
-
-    expect(fn () => $converger->converge($node, $expectedFingerprint))
-        ->toThrow(function (NodeProvisioningException $exception) use (
-            $expectedFingerprint,
-            $observedFingerprint,
-        ): void {
-            expect($exception->step)
-                ->toBe('ssh-host-key')
-                ->and($exception->errorCode)
-                ->toBe('node.ssh_host_key_mismatch')
-                ->and($exception->getMessage())
-                ->toBe('The SSH host fingerprint did not match for node [app-dev].')
-                ->not->toContain($expectedFingerprint, $observedFingerprint);
-        });
-
-    expect($knownHostsWrites)
-        ->toBeEmpty()
-        ->and($sshCalls)
-        ->toBeEmpty()
-        ->and($node->refresh()->ssh_host_fingerprint)
-        ->toBeNull();
-});
-
-it('preserves the stored pin when a known node host key changes', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-    $node->update(['ssh_host_fingerprint' => 'SHA256:original']);
-    $knownHostsWrites = [];
-    $sshCalls = [];
-    $converger = fingerprint_guard_converger($knownHostsWrites, $sshCalls);
-
-    expect(fn () => $converger->converge($node))
-        ->toThrow(function (NodeProvisioningException $exception): void {
-            expect($exception->step)
-                ->toBe('ssh-host-key')
-                ->and($exception->errorCode)
-                ->toBe('node.ssh_host_key_changed');
-        });
-
-    expect($knownHostsWrites)
-        ->toBeEmpty()
-        ->and($sshCalls)
-        ->toBeEmpty()
-        ->and($node->refresh()->ssh_host_fingerprint)
-        ->toBe('SHA256:original');
-});
-
-it('converges app-dev Caddy only after WireGuard SSH succeeds', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-
-    $events = [];
-    $ssh = new class($events) implements SshExecutor {
-        /** @param array<int, string> $events */
-        public function __construct(
-            private array &$events,
-        ) {}
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            $this->events[] = "{$connection->user}@{$connection->host}:".implode(' ', $command->arguments);
-
-            return node_success_result($command);
-        }
-    };
-    $wireGuard = new class($events) implements WireGuardPeerConverger {
-        /** @param array<int, string> $events */
-        public function __construct(
-            private array &$events,
-        ) {}
-
-        public function converge(Node $node, SshConnection $connection): void
-        {
-            $this->events[] = "wireguard:{$connection->user}@{$connection->host}";
-        }
-    };
-    $caddy = new class($events) implements AppDevCaddyManager {
-        /** @param array<int, string> $events */
-        public function __construct(
-            private array &$events,
-        ) {}
-
-        public function converge(Node $node): void
-        {
-            $this->events[] = "caddy:{$node->name}";
-        }
-    };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: $wireGuard,
-        appDevCaddy: $caddy,
-    );
-
-    $converger->converge($node, 'SHA256:pinned');
-
-    expect($events)
-        ->toHaveCount(7)
-        ->and($events[0])
-        ->toStartWith('root@94.237.40.75:bash -seu -- ')
-        ->and($events[1])
-        ->toBe('orbit@94.237.40.75:true')
-        ->and($events[2])
-        ->toBe('orbit@94.237.40.75:sudo ufw status numbered')
-        ->and($events[3])
-        ->toBe('orbit@94.237.40.75:sudo ufw status numbered')
-        ->and($events[4])
-        ->toBe('wireguard:orbit@94.237.40.75')
-        ->and($events[5])
-        ->toBe('orbit@10.44.0.2:true')
-        ->and($events[6])
-        ->toBe('caddy:app-dev');
-});
-
-it('does not converge app-dev Caddy for nodes without the app-dev role', function (): void {
-    $node = provisionable_node(name: 'worker', role: RoleName::Gateway);
-
-    $ssh = new class implements SshExecutor {
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            return node_success_result($command);
-        }
-    };
-    $wireGuard = new class implements WireGuardPeerConverger {
-        public function converge(Node $node, SshConnection $connection): void {}
-    };
-    $caddy = new class implements AppDevCaddyManager {
-        public bool $converged = false;
-
-        public function converge(Node $node): void
-        {
-            $this->converged = true;
-        }
-    };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: $wireGuard,
-        appDevCaddy: $caddy,
-    );
-
-    $converger->converge($node, 'SHA256:pinned');
-
-    expect($caddy->converged)->toBeFalse();
-});
-
-it('converts app-dev Caddy failures into node provisioning failures', function (): void {
-    $node = provisionable_node(role: RoleName::AppDev);
-
-    $result = new CommandResult(1, '', 'broken caddy', 10, false);
-    $previous = new RuntimeException('inner');
-    $runtimeException = new RuntimeConvergenceException(
-        step: 'caddy-config',
-        errorCode: 'app-dev.caddy_config_failed',
-        message: 'Caddy failed',
-        previous: $previous,
-        result: $result,
-    );
-
-    $ssh = new class implements SshExecutor {
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            return node_success_result($command);
-        }
-    };
-    $wireGuard = new class implements WireGuardPeerConverger {
-        public function converge(Node $node, SshConnection $connection): void {}
-    };
-    $caddy = new class($runtimeException) implements AppDevCaddyManager {
-        public function __construct(
-            private RuntimeConvergenceException $exception,
-        ) {}
-
-        public function converge(Node $node): void
-        {
-            throw $this->exception;
-        }
-    };
-    $converger = new NativeNodeConverger(
-        hostKeys: test_scanner(),
-        knownHosts: test_known_hosts(),
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: $wireGuard,
-        appDevCaddy: $caddy,
-    );
-
-    expect(fn () => $converger->converge($node, 'SHA256:pinned'))
-        ->toThrow(function (NodeProvisioningException $exception) use ($runtimeException, $previous, $result): void {
-            expect($exception->step)
-                ->toBe('caddy-config')
-                ->and($exception->errorCode)
-                ->toBe('app-dev.caddy_config_failed')
-                ->and($exception->result)
-                ->toBe($result)
-                ->and($exception->getPrevious())
-                ->toBe($runtimeException)
-                ->and($runtimeException->getPrevious())
-                ->toBe($previous);
-        });
-});
-
-function provisionable_node(
-    RoleName $role,
-    string $name = 'app-dev',
-    string $wireguardAddress = '10.44.0.2',
-): Node {
+function base_provisionable_node(): Node
+{
     $node = Node::query()->create([
-        'name' => $name,
+        'name' => 'base-node',
         'platform' => 'linux',
-        'public_ssh_host' => '94.237.40.75',
+        'public_ssh_host' => '192.0.2.10',
         'public_ssh_port' => 22,
         'ssh_user' => 'root',
-        'wireguard_address' => $wireguardAddress,
+        'wireguard_address' => '10.44.0.2',
     ]);
-    $node->roles()->create(['role' => $role]);
+    $node->roles()->create(['role' => RoleName::AppDev]);
 
     return $node;
 }
 
-function test_scanner(): HostKeyScanner
+function base_test_scanner(): HostKeyScanner
 {
     return new class implements HostKeyScanner {
         public function scan(string $host, int $port): HostKey
@@ -1203,24 +350,24 @@ function test_scanner(): HostKeyScanner
     };
 }
 
-function test_known_hosts(): KnownHostsStore
+function base_test_known_hosts(): KnownHostsStore
 {
     return new class implements KnownHostsStore {
         public function path(): string
         {
-            return '/home/orbit/.orbit/ssh/known_hosts';
+            return '/tmp/orbit-known-hosts';
         }
 
         public function put(string $host, int $port, HostKey $key): void {}
     };
 }
 
-function test_keys(): SshKeyProvider
+function base_test_keys(): SshKeyProvider
 {
     return new class implements SshKeyProvider {
         public function privateKeyPath(): string
         {
-            return '/home/orbit/.orbit/ssh/id_ed25519';
+            return '/tmp/orbit-key';
         }
 
         public function publicKey(): string
@@ -1230,219 +377,12 @@ function test_keys(): SshKeyProvider
     };
 }
 
-function node_success_result(RemoteCommand $command): CommandResult
+function base_bootstrap_command(): RemoteCommand
 {
-    if ($command->arguments !== ['sudo', 'ufw', 'status', 'numbered']) {
-        return new CommandResult(0, '', '', 10, false);
-    }
-
-    return new CommandResult(
-        0,
-        node_firewall_status([
-            'orbit:public-ssh-recovery',
-            'orbit:app-dev-http',
-            'orbit:app-dev-https',
-            'orbit:app-prod-http',
-            'orbit:app-prod-https',
-            'orbit:gateway-https',
-        ]),
-        '',
-        10,
-        false,
-    );
+    return new NodeBootstrapCommandFactory(base_test_keys())->make(new Node);
 }
 
-/** @param list<string> $comments */
-function node_firewall_status(array $comments): string
-{
-    $lines = [
-        'orbit:public-ssh-recovery' => [
-            '[ 1] 22/tcp                          ALLOW IN    Anywhere                   # orbit:public-ssh-recovery',
-            '[ 2] 22/tcp (v6)                     ALLOW IN    Anywhere (v6)              # orbit:public-ssh-recovery',
-        ],
-        'orbit:app-dev-http' => [
-            '[ 3] 10.44.0.2 80/tcp on orbit       ALLOW IN    Anywhere                   # orbit:app-dev-http',
-        ],
-        'orbit:app-dev-https' => [
-            '[ 4] 10.44.0.2 443/tcp on orbit      ALLOW IN    Anywhere                   # orbit:app-dev-https',
-        ],
-        'orbit:app-prod-http' => [
-            '[ 5] 80/tcp                          ALLOW IN    Anywhere                   # orbit:app-prod-http',
-            '[ 6] 80/tcp (v6)                     ALLOW IN    Anywhere (v6)              # orbit:app-prod-http',
-        ],
-        'orbit:app-prod-https' => [
-            '[ 7] 443/tcp                         ALLOW IN    Anywhere                   # orbit:app-prod-https',
-            '[ 8] 443/tcp (v6)                    ALLOW IN    Anywhere (v6)              # orbit:app-prod-https',
-        ],
-        'orbit:gateway-https' => [
-            '[ 9] 10.44.0.2 443/tcp on orbit      ALLOW IN    Anywhere                   # orbit:gateway-https',
-        ],
-    ];
-    $rules = [];
-
-    foreach ($comments as $comment) {
-        array_push($rules, ...$lines[$comment] ?? []);
-    }
-
-    return implode("\n", [
-        'Status: active',
-        '',
-        '     To                              Action      From',
-        '     --                              ------      ----',
-        ...$rules,
-        '',
-    ]);
-}
-
-/** @mago-expect lint:file-name The fake stays beside its single interaction test. */
-final class NodeInactiveUfwSshExecutor implements SshExecutor
-{
-    /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
-    public array $calls = [];
-
-    /** @var array<string, true> */
-    private array $comments = [];
-
-    private bool $enabled = false;
-
-    private int $storedRuleReads = 0;
-
-    public function __construct(
-        private readonly bool $failStoredRecovery = false,
-        private readonly bool $storedRuleDrift = false,
-        private readonly bool $storedRecoveryWrongShape = false,
-    ) {}
-
-    public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-    {
-        $this->calls[] = ['connection' => $connection, 'command' => $command];
-
-        if ($command->arguments === ['sudo', 'ufw', 'status', 'numbered']) {
-            $output = $this->enabled
-                ? node_firewall_status(array_keys($this->comments))
-                : "Status: inactive\n";
-
-            return new CommandResult(0, $output, '', 10, false);
-        }
-
-        if (array_slice(array: $command->arguments, offset: 0, length: 2) === ['sudo', 'awk']) {
-            $this->storedRuleReads++;
-
-            if ($this->failStoredRecovery && $this->storedRuleReads > 1) {
-                return new CommandResult(0, '', '', 10, false);
-            }
-
-            return new CommandResult(0, $this->storedRules(), '', 10, false);
-        }
-
-        if (array_slice(array: $command->arguments, offset: 0, length: 3) === ['sudo', 'ufw', 'allow']) {
-            $commentIndex = array_search(needle: 'comment', haystack: $command->arguments, strict: true);
-            $comment = is_int($commentIndex) ? $command->arguments[$commentIndex + 1] ?? null : null;
-
-            if (is_string($comment)) {
-                $this->comments[$comment] = true;
-            }
-        }
-
-        if ($command->arguments === ['sudo', 'ufw', '--force', 'enable']) {
-            $this->enabled = true;
-        }
-
-        return new CommandResult(0, '', '', 10, false);
-    }
-
-    private function storedRules(): string
-    {
-        $rules = [];
-
-        foreach (array_keys($this->comments) as $comment) {
-            $encoded = bin2hex($comment);
-            $rules[] = "__orbit_ufw_tuple:v4:### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in comment={$encoded}";
-            $rules[] = "__orbit_ufw_tuple:v6:### tuple ### allow tcp 22 ::/0 any ::/0 in comment={$encoded}";
-        }
-
-        if ($this->storedRuleDrift) {
-            $encoded = bin2hex('orbit:app-dev-http');
-            $rules[] = "__orbit_ufw_tuple:v4:### tuple ### allow tcp 1:65535 10.44.0.2 any 0.0.0.0/0 in_orbit comment={$encoded}";
-        }
-
-        if ($this->storedRecoveryWrongShape) {
-            $encoded = bin2hex('orbit:public-ssh-recovery');
-            $rules[] = "__orbit_ufw_tuple:v4:### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in_orbit comment={$encoded}";
-            $rules[] = "__orbit_ufw_tuple:v6:### tuple ### allow tcp 22 ::/0 any ::/0 in_orbit comment={$encoded}";
-        }
-
-        return implode("\n", $rules);
-    }
-}
-
-/**
- * @param list<string> $knownHostsWrites
- * @param list<string> $sshCalls
- */
-function fingerprint_guard_converger(
-    array &$knownHostsWrites,
-    array &$sshCalls,
-    string $observedFingerprint = 'SHA256:pinned',
-): NativeNodeConverger {
-    $knownHosts = new class($knownHostsWrites) implements KnownHostsStore {
-        /** @param list<string> $writes */
-        public function __construct(
-            private array &$writes,
-        ) {}
-
-        public function path(): string
-        {
-            return '/home/orbit/.orbit/ssh/known_hosts';
-        }
-
-        public function put(string $host, int $port, HostKey $key): void
-        {
-            $this->writes[] = $key->fingerprint;
-        }
-    };
-    $ssh = new class($sshCalls) implements SshExecutor {
-        /** @param list<string> $calls */
-        public function __construct(
-            private array &$calls,
-        ) {}
-
-        public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
-        {
-            $this->calls[] = $connection->host;
-
-            return new CommandResult(0, '', '', 10, false);
-        }
-    };
-    $wireGuard = new class implements WireGuardPeerConverger {
-        public function converge(Node $node, SshConnection $connection): void {}
-    };
-    $caddy = new class implements AppDevCaddyManager {
-        public function converge(Node $node): void {}
-    };
-    $hostKeys = new class($observedFingerprint) implements HostKeyScanner {
-        public function __construct(
-            private string $observedFingerprint,
-        ) {}
-
-        public function scan(string $host, int $port): HostKey
-        {
-            return new HostKey('ssh-ed25519', 'PUBLICKEY', $this->observedFingerprint);
-        }
-    };
-
-    return new NativeNodeConverger(
-        hostKeys: $hostKeys,
-        knownHosts: $knownHosts,
-        sshKeys: test_keys(),
-        ssh: $ssh,
-        bootstrapCommand: new NodeBootstrapCommandFactory(test_keys()),
-        wireGuard: $wireGuard,
-        appDevCaddy: $caddy,
-    );
-}
-
-function run_node_bootstrap_preflight(?string $release): Process
+function run_base_bootstrap_preflight(?string $release): Process
 {
     $filesystem = new Filesystem;
     $directory = sys_get_temp_dir().'/orbit-node-bootstrap-'.Str::random(16);
@@ -1453,17 +393,12 @@ function run_node_bootstrap_preflight(?string $release): Process
         $filesystem->put($releasePath, $release);
     }
 
-    $command = node_bootstrap_command();
-    $script = $command->input ?? '';
-    $preMutation = strstr(
-        haystack: $script,
-        needle: 'export DEBIAN_FRONTEND=noninteractive',
-        before_needle: true,
-    );
+    $script = base_bootstrap_command()->input ?? '';
+    $preMutation = strstr(haystack: $script, needle: 'export DEBIAN_FRONTEND=noninteractive', before_needle: true);
     $harness =
         str_replace('/etc/os-release', $releasePath, is_string($preMutation) ? $preMutation : $script)
         ."printf 'mutation-reached\\n'\n";
-    $process = new Process(['bash', '-seu', '--', 'ssh-ed25519 TEST', '0', '0']);
+    $process = new Process(['bash', '-seu', '--', 'ssh-ed25519 TEST']);
     $process->setInput($harness);
     $process->run();
     $filesystem->deleteDirectory($directory);
@@ -1471,106 +406,49 @@ function run_node_bootstrap_preflight(?string $release): Process
     return $process;
 }
 
-function node_bootstrap_command(): RemoteCommand
-{
-    $node = new Node;
-    $node->setRelation('roles', collect());
-
-    return new NodeBootstrapCommandFactory(test_keys())->make($node);
+function base_node_converger(
+    SshExecutor $ssh,
+    ?HostKeyScanner $scanner = null,
+    ?NodeRoleFirewallManager $firewall = null,
+): NativeNodeConverger {
+    return new NativeNodeConverger(
+        hostKeys: $scanner ?? base_test_scanner(),
+        knownHosts: base_test_known_hosts(),
+        sshKeys: base_test_keys(),
+        ssh: $ssh,
+        bootstrapCommand: new NodeBootstrapCommandFactory(base_test_keys()),
+        wireGuard: new class implements WireGuardPeerConverger {
+            public function converge(Node $node, SshConnection $connection): void {}
+        },
+        firewall: $firewall ?? base_firewall_spy(),
+    );
 }
 
-/**
- * @return array{
- *     root: string,
- *     stableDirectory: string,
- *     exactLauncherContents: string,
- *     process: Process,
- * }
- */
-function run_javascript_runtime_publication_harness(
-    string $bootstrapScript,
-    ?string $foreignLauncher = null,
-    ?string $failingRuntime = null,
-    ?string $exactLauncher = null,
-): array {
-    $filesystem = new Filesystem;
-    $root = sys_get_temp_dir().'/orbit-javascript-runtime-'.Str::random(16);
-    $sourceDirectory = "{$root}/source";
-    $stableDirectory = "{$root}/stable";
-    $filesystem->makeDirectory($sourceDirectory, 0o700, recursive: true);
-    $filesystem->makeDirectory($stableDirectory, 0o700, recursive: true);
+/** @mago-expect lint:file-name The fake stays with its base convergence tests. */
+final class BaseNodeSshExecutor implements SshExecutor
+{
+    /** @var list<array{connection: SshConnection, command: RemoteCommand}> */
+    public array $calls = [];
 
-    foreach (['vp', 'node', 'pnpm', 'npm', 'npx', 'bun'] as $binary) {
-        $exitCode = $binary === $failingRuntime ? 1 : 0;
-        $filesystem->put("{$sourceDirectory}/{$binary}", "#!/bin/sh\nexit {$exitCode}\n");
-        chmod(filename: "{$sourceDirectory}/{$binary}", permissions: 0o755);
+    public function execute(SshConnection $connection, RemoteCommand $command): CommandResult
+    {
+        $this->calls[] = ['connection' => $connection, 'command' => $command];
+
+        return new CommandResult(0, '', '', 1, false);
     }
+}
 
-    $exactLauncherContents = '';
+/** @param list<int>|null $baseNodes */
+function base_firewall_spy(?array &$baseNodes = null): NodeRoleFirewallManager
+{
+    $firewall = Mockery::mock(NodeRoleFirewallManager::class);
+    $firewall
+        ->shouldReceive('convergeBase')
+        ->andReturnUsing(static function (Node $node) use (&$baseNodes): void {
+            if (is_array($baseNodes)) {
+                $baseNodes[] = $node->id;
+            }
+        });
 
-    if ($exactLauncher !== null) {
-        $exactLauncherContents = implode("\n", [
-            '#!/bin/sh',
-            'export VP_HOME=/opt/orbit/vite-plus',
-            "exec \"{$sourceDirectory}/{$exactLauncher}\" \"\$@\"",
-            '',
-        ]);
-        $filesystem->put("{$stableDirectory}/{$exactLauncher}", $exactLauncherContents);
-        chmod(filename: "{$stableDirectory}/{$exactLauncher}", permissions: 0o755);
-    }
-
-    if ($foreignLauncher !== null) {
-        $filesystem->put("{$stableDirectory}/{$foreignLauncher}", "foreign\n");
-        chmod(filename: "{$stableDirectory}/{$foreignLauncher}", permissions: 0o755);
-    }
-
-    $start = mb_strpos(
-        haystack: $bootstrapScript,
-        needle: 'launcher_candidates=$(mktemp -d "/usr/local/bin/.orbit-js-runtime.XXXXXX")',
-    );
-    $end = is_int($start)
-        ? mb_strpos(haystack: $bootstrapScript, needle: 'trap - EXIT', offset: $start)
-        : false;
-
-    if (! is_int($start) || ! is_int($end)) {
-        throw new RuntimeException('Could not isolate the JavaScript runtime publication block.');
-    }
-
-    $publicationScript = mb_substr(
-        string: $bootstrapScript,
-        start: $start,
-        length: $end - $start + mb_strlen('trap - EXIT'),
-    );
-    $owner = posix_getpwuid(fileowner($stableDirectory));
-    $group = posix_getgrgid(filegroup($stableDirectory));
-
-    if (! is_array($owner) || ! is_array($group)) {
-        throw new RuntimeException('Could not resolve the JavaScript runtime harness owner.');
-    }
-
-    $publicationScript = str_replace(
-        [
-            '/opt/orbit/vite-plus/bin',
-            '/usr/local/bin',
-            "'root:root'",
-            'chown root:root "$candidate"',
-        ],
-        [
-            $sourceDirectory,
-            $stableDirectory,
-            "'{$owner['name']}:{$group['name']}'",
-            'true',
-        ],
-        $publicationScript,
-    );
-    $process = new Process(['bash', '-seu']);
-    $process->setInput("bun_binary={$sourceDirectory}/bun\n{$publicationScript}\n");
-    $process->run();
-
-    return [
-        'root' => $root,
-        'stableDirectory' => $stableDirectory,
-        'exactLauncherContents' => $exactLauncherContents,
-        'process' => $process,
-    ];
+    return $firewall;
 }

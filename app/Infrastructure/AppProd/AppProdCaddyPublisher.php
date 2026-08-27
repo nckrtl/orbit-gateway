@@ -110,4 +110,77 @@ final readonly class AppProdCaddyPublisher
                 BASH,
         );
     }
+
+    public function removeCommand(string $version): RemoteCommand
+    {
+        return new RemoteCommand(
+            arguments: [
+                'sudo',
+                'bash',
+                '-seu',
+                '--',
+                $version,
+                $this->versionsDirectory,
+                $this->liveCaddyfilePath,
+                $this->caddyServiceName,
+                $this->lockPath,
+                'app-prod.caddy',
+            ],
+            input: <<<'BASH'
+                version=$1
+                versions=$2
+                live_caddyfile=$3
+                caddy_service=$4
+                lock=$5
+                owned_fragment=$6
+                exec 9>"$lock"
+                flock -w 30 9
+                source_main=$(readlink -f "$live_caddyfile")
+                test -f "$source_main"
+                current_fragments=$(dirname "$source_main")/fragments
+                test ! -f "$current_fragments/app-prod.caddy" && exit 0
+                candidate="$versions/$version.candidate"
+                published="$versions/$version"
+                candidate_link="$(dirname "$live_caddyfile")/.Caddyfile.orbit-$version"
+                rollback_link="$(dirname "$live_caddyfile")/.Caddyfile.orbit-rollback-$version"
+                rollback_file="$(dirname "$live_caddyfile")/.Caddyfile.orbit-rollback-file-$version"
+                previous_main="$versions/.previous-main.$version"
+                install -d -o root -g caddy -m 0750 -- "$versions"
+                cp -a -- "$source_main" "$previous_main"
+                previous_target=
+                if [ -L "$live_caddyfile" ]; then
+                    previous_target=$(readlink "$live_caddyfile")
+                fi
+                trap 'rm -rf -- "$candidate"; rm -f -- "$candidate_link" "$rollback_link" "$rollback_file" "$previous_main"' EXIT
+                install -d -o root -g caddy -m 0750 -- "$candidate/fragments"
+                for fragment in "$current_fragments"/*.caddy; do
+                    if [ ! -e "$fragment" ] || [ "$(basename "$fragment")" = "$owned_fragment" ]; then
+                        continue
+                    fi
+                    cp --preserve=mode,ownership -- "$fragment" "$candidate/fragments/"
+                done
+                printf 'import %s/fragments/*.caddy\n' "$candidate" > "$candidate/Caddyfile"
+                chown -R root:caddy "$candidate"
+                find "$candidate" -type d -exec chmod 0750 {} +
+                find "$candidate" -type f -exec chmod 0640 {} +
+                caddy validate --config "$candidate/Caddyfile" --adapter caddyfile
+                printf 'import %s/%s/fragments/*.caddy\n' "$versions" "$version" > "$candidate/Caddyfile"
+                mv -fT -- "$candidate" "$published"
+                ln -s -- "$published/Caddyfile" "$candidate_link"
+                mv -fT -- "$candidate_link" "$live_caddyfile"
+                if ! systemctl reload-or-restart "$caddy_service"; then
+                    if [ -n "$previous_target" ]; then
+                        ln -s -- "$previous_target" "$rollback_link"
+                        mv -fT -- "$rollback_link" "$live_caddyfile"
+                    else
+                        cp -a -- "$previous_main" "$rollback_file"
+                        mv -fT -- "$rollback_file" "$live_caddyfile"
+                    fi
+                    systemctl reload-or-restart "$caddy_service" || true
+                    rm -rf -- "$published"
+                    exit 1
+                fi
+                BASH,
+        );
+    }
 }

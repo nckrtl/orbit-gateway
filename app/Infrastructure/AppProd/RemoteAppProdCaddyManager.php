@@ -27,4 +27,14 @@ final readonly class RemoteAppProdCaddyManager implements AppProdCaddyManager
             errorCode: 'app-prod.caddy_config_failed',
         );
     }
+
+    public function remove(Node $node): void
+    {
+        $this->ssh->execute(
+            $node,
+            $this->publisher->removeCommand(bin2hex(random_bytes(8))),
+            step: 'app-prod-caddy-config',
+            errorCode: 'app-prod.caddy_config_failed',
+        );
+    }
 }

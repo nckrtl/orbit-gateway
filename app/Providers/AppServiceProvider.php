@@ -26,6 +26,8 @@ use App\Domain\Firewall\FirewallManager;
 use App\Domain\Gateway\GatewayVpnConverger;
 use App\Domain\Gateway\GatewayWebConverger;
 use App\Domain\Nodes\NodeConverger;
+use App\Domain\Nodes\NodeRoleFirewallManager;
+use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Processes\ProcessRuntimeManager;
 use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Domain\WireGuard\VpnSettings;
@@ -57,6 +59,8 @@ use App\Infrastructure\Gateway\NativeGatewayCertificatePublisher;
 use App\Infrastructure\Gateway\NativeGatewayFpmConverger;
 use App\Infrastructure\Gateway\NativeGatewayWebConverger;
 use App\Infrastructure\Nodes\NativeNodeConverger;
+use App\Infrastructure\Nodes\Roles\NativeNodeRoleFirewallManager;
+use App\Infrastructure\Nodes\Roles\NativeRoleBaselineConverger;
 use App\Infrastructure\Processes\CommandDeadline;
 use App\Infrastructure\Processes\NativeProcessRunner;
 use App\Infrastructure\Processes\ProcessRunner;
@@ -97,6 +101,8 @@ final class AppServiceProvider extends ServiceProvider
         FirewallManager::class => NativeUfwFirewallManager::class,
         HostKeyScanner::class => SshHostKeyScanner::class,
         NodeConverger::class => NativeNodeConverger::class,
+        NodeRoleFirewallManager::class => NativeNodeRoleFirewallManager::class,
+        RoleBaselineConverger::class => NativeRoleBaselineConverger::class,
         ProcessRuntimeManager::class => RemoteProcessRuntimeManager::class,
         ProcessRunner::class => NativeProcessRunner::class,
         SshExecutor::class => NativeSshExecutor::class,

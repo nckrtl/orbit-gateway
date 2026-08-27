@@ -1958,6 +1958,135 @@ function set_xattr(string $path, string $value): void
     expect($result->succeeded())->toBeTrue($result->stderr);
 }
 
+it('removes only the app development Caddy fragment through an atomic preserved aggregate', function (): void {
+    expect(method_exists(AppDevCaddyPublisher::class, 'removeCommand'))->toBeTrue();
+
+    [$node] = app_dev_runtime_models();
+    $ssh = new AppDevFakeSshExecutor;
+    $manager = new RemoteAppDevCaddyManager(
+        sites: new AppDevSiteRepository,
+        renderer: new AppDevCaddyConfigRenderer,
+        ssh: app_dev_ssh($ssh),
+    );
+
+    $manager->remove($node);
+
+    $script = $ssh->commands[0]->input ?? '';
+
+    expect($script)
+        ->toContain(
+            'exec 9>"$lock"',
+            'flock -w 30 9',
+            'source_main=$(readlink -f "$live_caddyfile")',
+            'test ! -f "$current_fragments/app-dev.caddy"',
+            'cp --preserve=mode,ownership -- "$fragment" "$candidate/fragments/"',
+            'caddy validate --config "$candidate/Caddyfile" --adapter caddyfile',
+            'mv -fT -- "$candidate_link" "$live_caddyfile"',
+            'mv -fT -- "$rollback_link" "$live_caddyfile"',
+        )
+        ->not->toContain(
+            'apt-get remove',
+            'apt-get purge',
+            'rm -rf -- /home/orbit',
+            'rm -rf -- "$current_fragments"',
+        );
+});
+
+it('removes an app development fragment from a direct Caddyfile and restores that file on activation failure', function (): void {
+    $success = run_app_dev_direct_caddy_removal(failActivation: false);
+
+    expect($success['exitCode'])
+        ->toBe(0, $success['stderr'])
+        ->and($success['liveIsLink'])
+        ->toBeTrue()
+        ->and($success['publishedFragments'])
+        ->toBe(['custom.caddy' => "custom handler\n"]);
+
+    $failure = run_app_dev_direct_caddy_removal(failActivation: true);
+
+    expect($failure['exitCode'])
+        ->not
+        ->toBe(0)
+        ->and($failure['liveIsLink'])
+        ->toBeFalse()
+        ->and($failure['liveMain'])
+        ->toBe("import fragments/*.caddy\n")
+        ->and($failure['publishedFragments'])
+        ->toBeEmpty()
+        ->and($failure['serviceCalls'])
+        ->toBe(['reload-or-restart caddy', 'reload-or-restart caddy']);
+});
+
+/**
+ * @return array{exitCode: int, stderr: string, liveIsLink: bool, liveMain: string, publishedFragments: array<string, string>, serviceCalls: list<string>}
+ * @mago-expect lint:halstead The local process harness verifies filesystem and service rollback state.
+ * @mago-expect lint:no-boolean-flag-parameter The flag selects the success or activation-failure scenario.
+ */
+function run_app_dev_direct_caddy_removal(bool $failActivation): array
+{
+    $root = sys_get_temp_dir().'/orbit-caddy-remove-'.bin2hex(random_bytes(8));
+    $etc = $root.'/etc/caddy';
+    $bin = $root.'/bin';
+    $files = new Filesystem;
+    $files->ensureDirectoryExists(path: $etc.'/fragments', mode: 0o777, recursive: true);
+    $files->ensureDirectoryExists(path: $bin, mode: 0o777, recursive: true);
+    file_put_contents(filename: $etc.'/Caddyfile', data: "import fragments/*.caddy\n");
+    file_put_contents(filename: $etc.'/fragments/app-dev.caddy', data: "owned\n");
+    file_put_contents(filename: $etc.'/fragments/custom.caddy', data: "custom handler\n");
+    file_put_contents(
+        filename: $bin.'/install',
+        data: "#!/bin/bash\nargs=(); skip=0; for arg in \"\$@\"; do if [ \"\$skip\" = 1 ]; then skip=0; continue; fi; case \"\$arg\" in -o|-g) skip=1;; *) args+=(\"\$arg\");; esac; done; exec /usr/bin/install \"\${args[@]}\"\n",
+    );
+    file_put_contents(filename: $bin.'/chown', data: "#!/bin/bash\nexit 0\n");
+    file_put_contents(filename: $bin.'/caddy', data: "#!/bin/bash\nexit 0\n");
+    file_put_contents(
+        filename: $bin.'/systemctl',
+        data: "#!/bin/bash\nprintf '%s\\n' \"\$*\" >> \"\$HARNESS_SERVICE_LOG\"\nif [ \"\$HARNESS_FAIL_ACTIVATION\" = 1 ] && [ ! -e \"\$HARNESS_FAILED\" ]; then touch \"\$HARNESS_FAILED\"; exit 1; fi\nexit 0\n",
+    );
+
+    foreach (['install', 'chown', 'caddy', 'systemctl'] as $shim) {
+        chmod(filename: $bin.'/'.$shim, permissions: 0o755);
+    }
+
+    $caddyPublisher = new AppDevCaddyPublisher($etc.'/orbit-versions', $etc.'/Caddyfile', 'caddy', $etc.'/lock');
+    $command = $caddyPublisher->removeCommand('remove-version');
+    $process = new \Symfony\Component\Process\Process(
+        command: array_slice(array: $command->arguments, offset: 1),
+        cwd: $root,
+        env: [
+            'PATH' => $bin.':'.getenv('PATH'),
+            'HARNESS_SERVICE_LOG' => $root.'/service.log',
+            'HARNESS_FAIL_ACTIVATION' => $failActivation ? '1' : '0',
+            'HARNESS_FAILED' => $root.'/failed',
+        ],
+    );
+    $process->setInput($command->input);
+    $process->run();
+    $published = [];
+
+    $publishedDirectory = $etc.'/orbit-versions/remove-version/fragments';
+
+    if (is_dir($publishedDirectory)) {
+        foreach ($files->files($publishedDirectory) as $file) {
+            $published[$file->getFilename()] = (string) file_get_contents($file->getPathname());
+        }
+    }
+
+    $liveMain = file_get_contents($etc.'/Caddyfile');
+    $serviceLog = is_file($root.'/service.log') ? (string) file_get_contents($root.'/service.log') : '';
+    $result = [
+        'exitCode' => $process->getExitCode() ?? 1,
+        'stderr' => $process->getErrorOutput(),
+        'liveIsLink' => is_link($etc.'/Caddyfile'),
+        'liveMain' => $liveMain === false ? '' : $liveMain,
+        'publishedFragments' => $published,
+        'serviceCalls' => array_values(array_filter(explode("\n", trim($serviceLog)))),
+    ];
+    $files->deleteDirectory($root);
+
+    return $result;
+}
+
 function zero_site_publisher(AppDevCaddyPublishHarness $harness): AppDevCaddyPublisher
 {
     return new AppDevCaddyPublisher(
