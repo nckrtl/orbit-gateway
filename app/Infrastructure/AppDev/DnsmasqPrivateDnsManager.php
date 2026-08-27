@@ -72,6 +72,10 @@ final readonly class DnsmasqPrivateDnsManager implements PrivateDnsManager
                     $query->orWhere('id', $pendingNode->id);
                 }
             })
+            ->whereHas('roles', static function (Builder $query): void {
+                $query->where('role', RoleName::AppDev->value)
+                    ->whereIn('status', [LifecycleStatus::Provisioning, LifecycleStatus::Active]);
+            })
             ->whereNotNull('wireguard_address')
             ->whereNotNull('tld')
             ->get()

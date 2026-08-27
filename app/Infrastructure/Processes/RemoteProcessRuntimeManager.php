@@ -87,9 +87,14 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
 
     public function remove(#[SensitiveParameter] Process $process): void
     {
-        $this->withRuntimeLock($process, function () use ($process): void {
-            $this->removeUnlocked($process);
-        });
+        $target = $this->targets->forRemoval($process);
+        $this->withRuntimeLock(
+            $process,
+            function () use ($process, $target): void {
+                $this->removeUnlocked($process, $target);
+            },
+            $target,
+        );
     }
 
     private function startUnlocked(#[SensitiveParameter] Process $process): void
@@ -169,15 +174,15 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         );
     }
 
-    private function removeUnlocked(#[SensitiveParameter] Process $process): void
+    private function removeUnlocked(#[SensitiveParameter] Process $process, ProcessTarget $target): void
     {
         if ($process->runtime === ProcessRuntime::Docker) {
-            $this->removeDockerArtifacts($process);
+            $this->removeDockerArtifacts($process, $target);
 
             return;
         }
 
-        if (! $this->runtimeExistsAndIsOwned($process, 'inspect-runtime', 'process.remove_failed')) {
+        if (! $this->runtimeExistsAndIsOwned($process, 'inspect-runtime', 'process.remove_failed', $target)) {
             return;
         }
 
@@ -186,40 +191,46 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
             ['sudo', 'systemctl', 'disable', '--now', $this->systemd->unitName($process)],
             'stop',
             'process.remove_failed',
+            target: $target,
         );
         $this->executeSuccessfully(
             $process,
             ['sudo', 'rm', '-f', '--', $this->systemd->unitPath($process)],
             'remove-unit',
             'process.remove_failed',
+            target: $target,
         );
         $this->executeSuccessfully(
             $process,
             ['sudo', 'systemctl', 'daemon-reload'],
             'daemon-reload',
             'process.remove_failed',
+            target: $target,
         );
     }
 
-    private function removeDockerArtifacts(#[SensitiveParameter] Process $process): void
+    private function removeDockerArtifacts(#[SensitiveParameter] Process $process, ProcessTarget $target): void
     {
         $name = $this->docker->containerName($process);
         $artifacts = [
-            $name => $this->inspectOwnedDockerContainer($process, $name, 'inspect-runtime'),
+            $name => $this->inspectOwnedDockerContainer($process, $name, 'inspect-runtime', $target),
             "{$name}-rollback-running" => $this->inspectOwnedDockerContainer(
                 $process,
                 "{$name}-rollback-running",
                 'inspect-runtime',
+                $target,
             ),
             "{$name}-rollback-stopped" => $this->inspectOwnedDockerContainer(
                 $process,
                 "{$name}-rollback-stopped",
                 'inspect-runtime',
+                $target,
             ),
             "{$name}-candidate" => $this->inspectOwnedDockerContainer(
                 $process,
                 "{$name}-candidate",
                 'inspect-runtime',
+                $target,
             ),
         ];
 
@@ -233,6 +244,7 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
                 ['sudo', 'docker', 'container', 'rm', '--force', $artifact],
                 'remove',
                 'process.remove_failed',
+                target: $target,
             );
         }
     }
@@ -325,9 +337,13 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         return $this->docker->specHash($process, $this->targets->forProcess($process));
     }
 
-    private function withRuntimeLock(#[SensitiveParameter] Process $process, Closure $operation): void
-    {
-        $target = $this->targets->forProcess($process);
+    private function withRuntimeLock(
+        #[SensitiveParameter]
+        Process $process,
+        Closure $operation,
+        ?ProcessTarget $target = null,
+    ): void {
+        $target ??= $this->targets->forProcess($process);
         $lock = Cache::lock("orbit:process-runtime:{$target->node->id}:{$process->id}", 3_600);
 
         if (! $lock->get()) {
@@ -1094,10 +1110,12 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         Process $process,
         string $name,
         string $step,
+        ?ProcessTarget $target = null,
     ): ?array {
         $inspect = $this->execute(
             $process,
             ['sudo', 'docker', 'container', 'inspect', '--format', self::DOCKER_INSPECT_FORMAT, $name],
+            target: $target,
         );
 
         if ($this->isDockerNotFound($inspect)) {
@@ -1167,10 +1185,11 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         Process $process,
         string $step,
         string $errorCode,
+        ?ProcessTarget $target = null,
     ): bool {
         return match ($process->runtime) {
-            ProcessRuntime::Systemd => $this->systemdExistsAndIsOwned($process, $step, $errorCode),
-            ProcessRuntime::Docker => $this->dockerExistsAndIsOwned($process, $step, $errorCode),
+            ProcessRuntime::Systemd => $this->systemdExistsAndIsOwned($process, $step, $errorCode, $target),
+            ProcessRuntime::Docker => $this->dockerExistsAndIsOwned($process, $step, $errorCode, $target),
         };
     }
 
@@ -1179,9 +1198,10 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         Process $process,
         string $step,
         string $errorCode,
+        ?ProcessTarget $target = null,
     ): bool {
         $path = $this->systemd->unitPath($process);
-        $exists = $this->execute($process, ['sudo', 'test', '-e', $path]);
+        $exists = $this->execute($process, ['sudo', 'test', '-e', $path], target: $target);
 
         if ($this->isSystemdPathAbsent($exists)) {
             return false;
@@ -1191,7 +1211,7 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
             $this->fail($process, $step, $errorCode, $exists);
         }
 
-        $current = $this->execute($process, ['sudo', 'cat', '--', $path]);
+        $current = $this->execute($process, ['sudo', 'cat', '--', $path], target: $target);
 
         if ($this->isSystemdNotFound($current)) {
             return false;
@@ -1220,11 +1240,13 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         Process $process,
         string $step,
         string $errorCode,
+        ?ProcessTarget $target = null,
     ): bool {
         $name = $this->docker->containerName($process);
         $inspect = $this->execute(
             $process,
             ['sudo', 'docker', 'container', 'inspect', '--format', self::DOCKER_OWNER_FORMAT, $name],
+            target: $target,
         );
 
         if ($this->isDockerNotFound($inspect)) {
@@ -1321,9 +1343,10 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         ?string $input = null,
         #[SensitiveParameter]
         ?ProtectedInput $protectedInput = null,
+        ?ProcessTarget $target = null,
     ): CommandResult {
         try {
-            $target = $this->targets->forProcess($process);
+            $target ??= $this->targets->forProcess($process);
 
             if (! is_string($target->node->wireguard_address) || $target->node->wireguard_address === '') {
                 throw new ProcessOperationException(
@@ -1359,8 +1382,9 @@ final readonly class RemoteProcessRuntimeManager implements ProcessRuntimeManage
         ?string $input = null,
         #[SensitiveParameter]
         ?ProtectedInput $protectedInput = null,
+        ?ProcessTarget $target = null,
     ): CommandResult {
-        $result = $this->execute($process, $arguments, $input, $protectedInput);
+        $result = $this->execute($process, $arguments, $input, $protectedInput, $target);
 
         if ($result->succeeded()) {
             return $result;

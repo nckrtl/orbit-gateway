@@ -6,6 +6,7 @@ use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Processes\ProcessRuntime;
 use App\Domain\Processes\ProcessTargetResolver;
 use App\Domain\Shared\LifecycleStatus;
+use App\Domain\Shared\ResourceOperationException;
 use App\Infrastructure\Processes\CommandResult;
 use App\Infrastructure\Processes\DockerProcessRenderer;
 use App\Infrastructure\Processes\NativeProcessRunner;
@@ -23,6 +24,7 @@ use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
 use App\Models\Process;
+use App\Models\Workspace;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Cache;
 
@@ -1299,6 +1301,9 @@ it('requires every Docker ownership label before lifecycle mutation', function (
 
 it('removes every exact-owned Docker recovery artifact before the process record can be deleted', function (): void {
     $process = runtime_manager_docker_process($this->instance);
+    $runtimeConfiguration = $process->runtime_config;
+    $runtimeConfiguration['volumes'][] = ['source' => '/srv/shared', 'target' => '/shared', 'read_only' => true];
+    $process->update(['runtime_config' => $runtimeConfiguration]);
     $name = "orbit-process-{$process->id}-redis";
     $candidate = "{$name}-candidate";
     $runningRollback = "{$name}-rollback-running";
@@ -1315,17 +1320,22 @@ it('removes every exact-owned Docker recovery artifact before the process record
 
     $this->manager->remove($process);
 
-    expect(array_map(
+    $arguments = array_map(
         static fn (RemoteCommand $command): array => $command->arguments,
         $this->ssh->commands,
-    ))->toBe([
-        process_runtime_docker_inspect_arguments($name),
-        process_runtime_docker_inspect_arguments($runningRollback),
-        process_runtime_docker_inspect_arguments($stoppedRollback),
-        process_runtime_docker_inspect_arguments($candidate),
-        ['sudo', 'docker', 'container', 'rm', '--force', $candidate],
-        ['sudo', 'docker', 'container', 'rm', '--force', $runningRollback],
-    ]);
+    );
+
+    expect($arguments)
+        ->toBe([
+            process_runtime_docker_inspect_arguments($name),
+            process_runtime_docker_inspect_arguments($runningRollback),
+            process_runtime_docker_inspect_arguments($stoppedRollback),
+            process_runtime_docker_inspect_arguments($candidate),
+            ['sudo', 'docker', 'container', 'rm', '--force', $candidate],
+            ['sudo', 'docker', 'container', 'rm', '--force', $runningRollback],
+        ])
+        ->and(collect($arguments)->flatten()->all())
+        ->not->toContain('--volumes', 'volume', 'redis-data', '/srv/shared');
 });
 
 it('does not remove any Docker artifact when a recovery name is not exactly owned', function (): void {
@@ -1476,6 +1486,88 @@ it('requires a successful systemd stop before deleting an owned unit', function 
     $this->fail('Expected removal to stop after disable failed.');
 });
 
+it('removes an instance process after its role and resources enter removing state', function (): void {
+    $process = runtime_manager_systemd_process($this->instance);
+    $process->update(['status' => LifecycleStatus::Removing]);
+    $this->instance->update(['status' => LifecycleStatus::Removing]);
+    $this->instance->node->roles()->where('role', 'app-dev')->update(['status' => LifecycleStatus::Removing]);
+    $ownedUnit = "[Unit]\nX-Orbit-Process-ID={$process->id}\n";
+    $this->ssh->responses = [
+        process_runtime_result(),
+        process_runtime_result(stdout: $ownedUnit),
+        process_runtime_result(),
+        process_runtime_result(),
+        process_runtime_result(),
+    ];
+
+    $this->manager->remove($process);
+
+    expect($this->ssh->connections)
+        ->each(fn ($connection) => $connection->user->toBe('orbit'))
+        ->and($this->ssh->commands)
+        ->toHaveCount(5);
+});
+
+it('derives the production removal target from persisted instance identity after role deactivation', function (): void {
+    $process = runtime_manager_systemd_process($this->instance);
+    $process->update(['status' => LifecycleStatus::Removing]);
+    $this->instance->update([
+        'status' => LifecycleStatus::Removing,
+        'certificate_mode' => \App\Domain\Instances\CertificateMode::Acme,
+    ]);
+    $this->instance->node->roles()->delete();
+    $this->instance->node->roles()->create(['role' => 'app-prod', 'status' => LifecycleStatus::Removing]);
+
+    $target = new ProcessTargetResolver()->forRemoval($process);
+
+    expect($target->user)
+        ->toBe('orbit-docs')
+        ->and($target->checkoutPath)
+        ->toBe($this->instance->checkout_path)
+        ->and($target->node->is($this->instance->node))
+        ->toBeTrue();
+});
+
+it('keeps the active-node prerequisite on the removal-only target path', function (): void {
+    $process = runtime_manager_systemd_process($this->instance);
+    $this->instance->update(['status' => LifecycleStatus::Removing]);
+    $this->instance->node->update(['status' => LifecycleStatus::Failed]);
+
+    expect(fn () => new ProcessTargetResolver()->forRemoval($process))
+        ->toThrow(function (ResourceOperationException $exception): void {
+            expect($exception->errorCode)->toBe('process.target_inactive');
+        });
+});
+
+it('removes a workspace process after its role and resources enter removing state', function (): void {
+    $workspace = Workspace::query()->create([
+        'instance_id' => $this->instance->id,
+        'name' => 'feature',
+        'branch' => 'feature',
+        'checkout_path' => $this->instance->checkout_path.'/feature',
+        'hostname' => 'feature.docs.app-dev.orbit',
+        'status' => LifecycleStatus::Removing,
+    ]);
+    $process = runtime_manager_systemd_process_for_workspace($workspace);
+    $this->instance->update(['status' => LifecycleStatus::Removing]);
+    $this->instance->node->roles()->where('role', 'app-dev')->update(['status' => LifecycleStatus::Removing]);
+    $ownedUnit = "[Unit]\nX-Orbit-Process-ID={$process->id}\n";
+    $this->ssh->responses = [
+        process_runtime_result(),
+        process_runtime_result(stdout: $ownedUnit),
+        process_runtime_result(),
+        process_runtime_result(),
+        process_runtime_result(),
+    ];
+
+    $this->manager->remove($process);
+
+    expect($this->ssh->connections)
+        ->each(fn ($connection) => $connection->user->toBe('orbit'))
+        ->and($this->ssh->commands)
+        ->toHaveCount(5);
+});
+
 it('rechecks exact Docker ownership before lifecycle control', function (): void {
     $process = runtime_manager_docker_process($this->instance);
     $this->ssh->responses = [process_runtime_result(stdout: '999')];
@@ -1603,6 +1695,24 @@ function runtime_manager_systemd_process(Instance $instance): Process
         'restart_policy' => 'always',
         'desired_state' => 'stopped',
         'status' => LifecycleStatus::Active,
+    ]);
+}
+
+function runtime_manager_systemd_process_for_workspace(Workspace $workspace): Process
+{
+    return Process::query()->create([
+        'owner_type' => Workspace::class,
+        'owner_id' => $workspace->id,
+        'name' => 'queue',
+        'runtime' => ProcessRuntime::Systemd,
+        'working_directory' => $workspace->checkout_path,
+        'runtime_config' => [
+            'command' => ['/usr/bin/php', 'artisan', 'queue:work'],
+            'environment_file' => $workspace->checkout_path.'/.env',
+        ],
+        'restart_policy' => 'always',
+        'desired_state' => 'stopped',
+        'status' => LifecycleStatus::Removing,
     ]);
 }
 

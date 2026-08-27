@@ -11,4 +11,6 @@ interface AppProdRuntimeConverger
     public function convergeInstance(Instance $instance): void;
 
     public function removeInstance(Instance $instance): void;
+
+    public function unpublishInstance(Instance $instance): void;
 }

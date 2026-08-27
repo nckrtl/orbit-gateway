@@ -30,9 +30,14 @@ final readonly class NativeAppProdRuntimeConverger implements AppProdRuntimeConv
 
     public function removeInstance(Instance $instance): void
     {
-        $this->caddy->converge($instance->node);
-        $this->phpFpm->converge($instance->node);
+        $this->unpublishInstance($instance);
         $this->source->remove($instance);
         $this->users->remove($instance);
+    }
+
+    public function unpublishInstance(Instance $instance): void
+    {
+        $this->caddy->converge($instance->node);
+        $this->phpFpm->converge($instance->node);
     }
 }

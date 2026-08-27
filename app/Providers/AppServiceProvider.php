@@ -26,6 +26,8 @@ use App\Domain\Firewall\FirewallManager;
 use App\Domain\Gateway\GatewayVpnConverger;
 use App\Domain\Gateway\GatewayWebConverger;
 use App\Domain\Nodes\NodeConverger;
+use App\Domain\Nodes\NodeRoleDependencyInspector;
+use App\Domain\Nodes\NodeRoleDependentCleaner;
 use App\Domain\Nodes\NodeRoleFirewallManager;
 use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Processes\ProcessRuntimeManager;
@@ -58,7 +60,9 @@ use App\Infrastructure\Gateway\NativeGatewayCaddyConverger;
 use App\Infrastructure\Gateway\NativeGatewayCertificatePublisher;
 use App\Infrastructure\Gateway\NativeGatewayFpmConverger;
 use App\Infrastructure\Gateway\NativeGatewayWebConverger;
+use App\Infrastructure\Nodes\EloquentNodeRoleDependencyInspector;
 use App\Infrastructure\Nodes\NativeNodeConverger;
+use App\Infrastructure\Nodes\NativeNodeRoleDependentCleaner;
 use App\Infrastructure\Nodes\Roles\NativeNodeRoleFirewallManager;
 use App\Infrastructure\Nodes\Roles\NativeRoleBaselineConverger;
 use App\Infrastructure\Processes\CommandDeadline;
@@ -101,6 +105,8 @@ final class AppServiceProvider extends ServiceProvider
         FirewallManager::class => NativeUfwFirewallManager::class,
         HostKeyScanner::class => SshHostKeyScanner::class,
         NodeConverger::class => NativeNodeConverger::class,
+        NodeRoleDependencyInspector::class => EloquentNodeRoleDependencyInspector::class,
+        NodeRoleDependentCleaner::class => NativeNodeRoleDependentCleaner::class,
         NodeRoleFirewallManager::class => NativeNodeRoleFirewallManager::class,
         RoleBaselineConverger::class => NativeRoleBaselineConverger::class,
         ProcessRuntimeManager::class => RemoteProcessRuntimeManager::class,

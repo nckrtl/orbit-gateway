@@ -13,7 +13,11 @@ interface AppDevRuntimeConverger
 
     public function removeInstance(Instance $instance): void;
 
+    public function unpublishInstance(Instance $instance): void;
+
     public function convergeWorkspace(Workspace $workspace): void;
 
     public function removeWorkspace(Workspace $workspace): void;
+
+    public function unpublishWorkspace(Workspace $workspace): void;
 }

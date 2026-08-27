@@ -2,7 +2,12 @@
 
 declare(strict_types=1);
 
+use App\Domain\AppDev\AppDevCaddyManager;
+use App\Domain\AppDev\AppDevCertificateManager;
+use App\Domain\AppDev\AppDevPhpFpmManager;
+use App\Domain\AppDev\AppDevSourceManager;
 use App\Domain\AppDev\AppDevSourceOperationLock;
+use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Certificates\LeafCertificateSigner;
 use App\Domain\Instances\CertificateMode;
@@ -14,6 +19,7 @@ use App\Infrastructure\AppDev\AppDevPhpFpmConfigRenderer;
 use App\Infrastructure\AppDev\AppDevSiteRepository;
 use App\Infrastructure\AppDev\AppDevSshExecutor;
 use App\Infrastructure\AppDev\DnsmasqPrivateDnsManager;
+use App\Infrastructure\AppDev\NativeAppDevRuntimeConverger;
 use App\Infrastructure\AppDev\NativeAppDevSourceOperationLock;
 use App\Infrastructure\AppDev\RemoteAppDevCaddyManager;
 use App\Infrastructure\AppDev\RemoteAppDevCertificateManager;
@@ -1399,6 +1405,7 @@ it('projects only the explicit provisioning node before its active transition', 
         'public_ssh_host' => '192.0.2.30',
         'wireguard_address' => '10.44.0.30',
     ]);
+    $pending->roles()->create(['role' => RoleName::AppDev, 'status' => LifecycleStatus::Provisioning]);
     Node::query()->create([
         'name' => 'other-pending-app-dev',
         'status' => LifecycleStatus::Provisioning,
@@ -1420,6 +1427,36 @@ it('projects only the explicit provisioning node before its active transition', 
             base64_encode('address=/.other-pending.orbit/10.44.0.31'),
             'other-pending.orbit',
         );
+});
+
+it('projects node wildcards only while the app-dev role is provisioning or active', function (): void {
+    foreach ([
+        LifecycleStatus::Provisioning,
+        LifecycleStatus::Active,
+        LifecycleStatus::Removing,
+        LifecycleStatus::Failed,
+    ] as $index => $status) {
+        $node = Node::query()->create([
+            'name' => "dns-role-{$status->value}",
+            'status' => LifecycleStatus::Active,
+            'platform' => 'linux',
+            'tld' => "role-{$status->value}.orbit",
+            'public_ssh_host' => '192.0.2.'.(40 + $index),
+            'wireguard_address' => '10.44.0.'.(40 + $index),
+        ]);
+        $node->roles()->create(['role' => RoleName::AppDev, 'status' => $status]);
+    }
+    $processes = new AppDevFakeProcessRunner;
+
+    new DnsmasqPrivateDnsManager(new AppDevSiteRepository, $processes)->converge();
+
+    $input = $processes->invocations[0]->input ?? '';
+    preg_match("/printf '%s' '([^']+)'/", $input, $matches);
+    $configuration = base64_decode($matches[1] ?? '', strict: true);
+
+    expect($configuration)
+        ->toContain('role-provisioning.orbit', 'role-active.orbit')
+        ->not->toContain('role-removing.orbit', 'role-failed.orbit');
 });
 
 it('holds the shared projection lock while capturing and publishing DNS intent', function (): void {
@@ -1665,6 +1702,7 @@ function app_dev_runtime_models(string $instancePhp = '8.5'): array
         'wireguard_address' => '10.44.0.3',
         'ssh_user' => 'orbit',
     ]);
+    $node->roles()->create(['role' => RoleName::AppDev, 'status' => LifecycleStatus::Active]);
     $app = OrbitApp::query()->create([
         'name' => 'Acme',
         'slug' => 'acme',
@@ -1957,6 +1995,113 @@ function set_xattr(string $path, string $value): void
 
     expect($result->succeeded())->toBeTrue($result->stderr);
 }
+
+it('unpublishes app-dev runtime repeatedly without removing source', function (): void {
+    [, $instance, $workspace] = app_dev_runtime_models();
+    $calls = [];
+    $source = new class($calls) implements AppDevSourceManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function convergeInstance(Instance $instance): void {}
+
+        public function removeInstance(Instance $instance): void
+        {
+            $this->calls[] = 'source:instance';
+        }
+
+        public function convergeWorkspace(Workspace $workspace): void {}
+
+        public function removeWorkspace(Workspace $workspace): void
+        {
+            $this->calls[] = 'source:workspace';
+        }
+    };
+    $fpm = new class($calls) implements AppDevPhpFpmManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Node $node): void
+        {
+            $this->calls[] = 'fpm';
+        }
+    };
+    $certificates = new class($calls) implements AppDevCertificateManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function convergeInstance(Instance $instance): void {}
+
+        public function removeInstance(Instance $instance): void
+        {
+            $this->calls[] = 'certificate:instance';
+        }
+
+        public function convergeWorkspace(Workspace $workspace): void {}
+
+        public function removeWorkspace(Workspace $workspace): void
+        {
+            $this->calls[] = 'certificate:workspace';
+        }
+    };
+    $caddy = new class($calls) implements AppDevCaddyManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Node $node): void
+        {
+            $this->calls[] = 'caddy';
+        }
+
+        public function remove(Node $node): void {}
+    };
+    $dns = new class($calls) implements PrivateDnsManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(?Node $pendingNode = null): void
+        {
+            $this->calls[] = 'dns';
+        }
+    };
+    $runtime = new NativeAppDevRuntimeConverger($source, $fpm, $certificates, $caddy, $dns);
+
+    $runtime->unpublishWorkspace($workspace);
+    $runtime->unpublishWorkspace($workspace);
+    $runtime->unpublishInstance($instance);
+    $runtime->unpublishInstance($instance);
+
+    expect($calls)
+        ->toBe([
+            'caddy',
+            'fpm',
+            'dns',
+            'certificate:workspace',
+            'caddy',
+            'fpm',
+            'dns',
+            'certificate:workspace',
+            'caddy',
+            'fpm',
+            'dns',
+            'certificate:instance',
+            'caddy',
+            'fpm',
+            'dns',
+            'certificate:instance',
+        ])
+        ->not->toContain('source:workspace', 'source:instance');
+});
 
 it('removes only the app development Caddy fragment through an atomic preserved aggregate', function (): void {
     expect(method_exists(AppDevCaddyPublisher::class, 'removeCommand'))->toBeTrue();

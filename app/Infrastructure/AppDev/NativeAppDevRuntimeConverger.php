@@ -34,11 +34,16 @@ final readonly class NativeAppDevRuntimeConverger implements AppDevRuntimeConver
 
     public function removeInstance(Instance $instance): void
     {
+        $this->unpublishInstance($instance);
+        $this->source->removeInstance($instance);
+    }
+
+    public function unpublishInstance(Instance $instance): void
+    {
         $this->caddy->converge($instance->node);
         $this->phpFpm->converge($instance->node);
         $this->dns->converge();
         $this->certificates->removeInstance($instance);
-        $this->source->removeInstance($instance);
     }
 
     public function convergeWorkspace(Workspace $workspace): void
@@ -52,10 +57,15 @@ final readonly class NativeAppDevRuntimeConverger implements AppDevRuntimeConver
 
     public function removeWorkspace(Workspace $workspace): void
     {
+        $this->unpublishWorkspace($workspace);
+        $this->source->removeWorkspace($workspace);
+    }
+
+    public function unpublishWorkspace(Workspace $workspace): void
+    {
         $this->caddy->converge($workspace->instance->node);
         $this->phpFpm->converge($workspace->instance->node);
         $this->dns->converge();
         $this->certificates->removeWorkspace($workspace);
-        $this->source->removeWorkspace($workspace);
     }
 }

@@ -739,6 +739,70 @@ it('converges and removes production runtime components in recovery-safe order',
     ]);
 });
 
+it('unpublishes production runtime repeatedly without removing source or its user', function (): void {
+    [, $instance] = app_prod_runtime_models();
+    $calls = [];
+    $users = new class($calls) implements AppProdUserManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Instance $instance): void {}
+
+        public function remove(Instance $instance): void
+        {
+            $this->calls[] = 'user';
+        }
+    };
+    $source = new class($calls) implements AppProdSourceManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Instance $instance): void {}
+
+        public function remove(Instance $instance): void
+        {
+            $this->calls[] = 'source';
+        }
+    };
+    $fpm = new class($calls) implements AppProdPhpFpmManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Node $node): void
+        {
+            $this->calls[] = 'fpm';
+        }
+    };
+    $caddy = new class($calls) implements AppProdCaddyManager {
+        /** @param list<string> $calls */
+        public function __construct(
+            public array &$calls,
+        ) {}
+
+        public function converge(Node $node): void
+        {
+            $this->calls[] = 'caddy';
+        }
+
+        public function remove(Node $node): void
+        {
+            $this->calls[] = 'caddy';
+        }
+    };
+    $runtime = new NativeAppProdRuntimeConverger($users, $source, $fpm, $caddy);
+
+    $runtime->unpublishInstance($instance);
+    $runtime->unpublishInstance($instance);
+
+    expect($calls)->toBe(['caddy', 'fpm', 'caddy', 'fpm']);
+});
+
 it('removes only the app production Caddy fragment through an atomic preserved aggregate', function (): void {
     expect(method_exists(AppProdCaddyPublisher::class, 'removeCommand'))->toBeTrue();
 

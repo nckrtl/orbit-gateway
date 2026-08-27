@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Processes;
 
+use App\Domain\Instances\CertificateMode;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
@@ -12,6 +13,7 @@ use App\Models\Process;
 use App\Models\Workspace;
 use SensitiveParameter;
 
+/** @mago-expect lint:too-many-methods Active and removal target policies stay explicit at this security boundary. */
 final readonly class ProcessTargetResolver
 {
     public function resolve(ProcessTargetType $type, int $id): ProcessTarget
@@ -36,6 +38,18 @@ final readonly class ProcessTargetResolver
             ProcessTargetType::fromModelClass($process->owner_type),
             $process->owner_id,
         );
+    }
+
+    public function forRemoval(#[SensitiveParameter] Process $process): ProcessTarget
+    {
+        return match (ProcessTargetType::fromModelClass($process->owner_type)) {
+            ProcessTargetType::Instance => $this->removalInstance(
+                Instance::query()->with(['app', 'node'])->findOrFail($process->owner_id),
+            ),
+            ProcessTargetType::Workspace => $this->removalWorkspace(
+                Workspace::query()->with(['instance.app', 'instance.node'])->findOrFail($process->owner_id),
+            ),
+        };
     }
 
     private function instance(Instance $instance): ProcessTarget
@@ -77,14 +91,40 @@ final readonly class ProcessTargetResolver
         );
     }
 
-    private function ensureActive(Instance $instance): void
+    private function removalInstance(Instance $instance): ProcessTarget
     {
-        if ($instance->node->platform !== 'linux') {
+        $this->ensureRemovalAllowed($instance);
+
+        return new ProcessTarget(
+            node: $instance->node,
+            user: $instance->certificate_mode === CertificateMode::Acme
+                ? "orbit-{$instance->app->slug}"
+                : 'orbit',
+            checkoutPath: $instance->checkout_path,
+        );
+    }
+
+    private function removalWorkspace(Workspace $workspace): ProcessTarget
+    {
+        $this->ensureRemovalAllowed($workspace->instance);
+
+        if ($workspace->instance->certificate_mode !== CertificateMode::OrbitCa) {
             throw new ResourceOperationException(
-                errorCode: 'process.platform_unsupported',
-                message: "Processes are not supported on [{$instance->node->platform}] nodes yet.",
+                errorCode: 'process.workspace_not_allowed',
+                message: 'Workspaces cannot run processes on app-prod nodes.',
             );
         }
+
+        return new ProcessTarget(
+            node: $workspace->instance->node,
+            user: 'orbit',
+            checkoutPath: $workspace->checkout_path,
+        );
+    }
+
+    private function ensureActive(Instance $instance): void
+    {
+        $this->ensureLinux($instance);
 
         if ($instance->status === LifecycleStatus::Active && $instance->node->status === LifecycleStatus::Active) {
             return;
@@ -93,6 +133,32 @@ final readonly class ProcessTargetResolver
         throw new ResourceOperationException(
             errorCode: 'process.target_inactive',
             message: "Instance [{$instance->name}] or its node is not active.",
+        );
+    }
+
+    private function ensureLinux(Instance $instance): void
+    {
+        if ($instance->node->platform === 'linux') {
+            return;
+        }
+
+        throw new ResourceOperationException(
+            errorCode: 'process.platform_unsupported',
+            message: "Processes are not supported on [{$instance->node->platform}] nodes yet.",
+        );
+    }
+
+    private function ensureRemovalAllowed(Instance $instance): void
+    {
+        $this->ensureLinux($instance);
+
+        if ($instance->node->status === LifecycleStatus::Active) {
+            return;
+        }
+
+        throw new ResourceOperationException(
+            errorCode: 'process.target_inactive',
+            message: "Node [{$instance->node->name}] is not active.",
         );
     }
 

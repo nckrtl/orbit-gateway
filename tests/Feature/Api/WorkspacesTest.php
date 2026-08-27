@@ -26,6 +26,8 @@ describe('workspace API', function (): void {
 
             public function removeInstance(Instance $instance): void {}
 
+            public function unpublishInstance(Instance $instance): void {}
+
             public function convergeWorkspace(Workspace $workspace): void
             {
                 $this->calls[] = "workspace:{$workspace->id}:{$workspace->php_version}";
@@ -51,6 +53,8 @@ describe('workspace API', function (): void {
                     );
                 }
             }
+
+            public function unpublishWorkspace(Workspace $workspace): void {}
         };
         app()->instance(AppDevRuntimeConverger::class, $this->runtime);
 

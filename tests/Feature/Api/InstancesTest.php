@@ -49,9 +49,13 @@ describe('instance API', function (): void {
                 }
             }
 
+            public function unpublishInstance(Instance $instance): void {}
+
             public function convergeWorkspace(\App\Models\Workspace $workspace): void {}
 
             public function removeWorkspace(\App\Models\Workspace $workspace): void {}
+
+            public function unpublishWorkspace(\App\Models\Workspace $workspace): void {}
         };
         app()->instance(AppDevRuntimeConverger::class, $this->runtime);
         $this->productionRuntime = new class implements AppProdRuntimeConverger {
@@ -77,6 +81,8 @@ describe('instance API', function (): void {
             {
                 $this->calls[] = "instance-remove:{$instance->id}";
             }
+
+            public function unpublishInstance(Instance $instance): void {}
         };
         app()->instance(AppProdRuntimeConverger::class, $this->productionRuntime);
 
