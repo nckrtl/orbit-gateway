@@ -8,9 +8,13 @@ use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Firewall\FirewallOperationException;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\NodeRemovalException;
+use App\Domain\Nodes\NodeRoleOperationException;
+use App\Domain\Nodes\NodeRoleValidationException;
 use App\Domain\Nodes\RoleAssignmentException;
+use App\Domain\Nodes\RoleName;
 use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Shared\ResourceOperationException;
+use App\Http\Requests\TopLevelJsonObjectInspector;
 use App\Infrastructure\Activity\CommandActivityInputSanitizer;
 use App\Infrastructure\Activity\CommandActivityTargetResolver;
 use App\Infrastructure\Processes\CommandDeadline;
@@ -26,9 +30,11 @@ use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
+use UnexpectedValueException;
 
 /**
  * @mago-expect lint:cyclomatic-complexity Command activity maps each bounded domain failure explicitly.
+ * @mago-expect lint:kan-defect Command activity owns one bounded attempt and its explicit failure projection.
  * @mago-expect lint:too-many-methods Command activity keeps one attempt lifecycle in one middleware.
  */
 final readonly class RecordCommandActivity
@@ -37,6 +43,7 @@ final readonly class RecordCommandActivity
         private CommandDeadline $deadline,
         private CommandActivityInputSanitizer $inputSanitizer,
         private CommandActivityTargetResolver $targetResolver,
+        private TopLevelJsonObjectInspector $jsonInspector,
     ) {}
 
     public function handle(Request $request, Closure $next): Response
@@ -82,7 +89,7 @@ final readonly class RecordCommandActivity
             'properties' => [
                 'method' => $request->method(),
                 'path' => $request->path(),
-                'input' => $this->inputSanitizer->sanitize($request->collect()->all()),
+                'input' => $this->activityInput($request),
             ],
             'request_id' => is_string($requestId) ? $requestId : '',
             'command' => is_string($command) ? $command : 'unknown',
@@ -126,13 +133,16 @@ final readonly class RecordCommandActivity
             'status' => 'failed',
             'duration_ms' => $this->duration($startedAt),
             'error_code' => match (true) {
-                $exception instanceof ValidationException => 'validation.failed',
+                $exception instanceof ValidationException,
+                $exception instanceof NodeRoleValidationException,
+                    => 'validation.failed',
                 $exception instanceof NodeProvisioningException => $exception->errorCode,
                 $exception instanceof NodeRemovalException => $exception->errorCode,
                 $exception instanceof RuntimeConvergenceException => $exception->errorCode,
                 $exception instanceof ProcessOperationException => $exception->errorCode,
                 $exception instanceof FirewallOperationException => $exception->errorCode,
                 $exception instanceof ResourceOperationException => $exception->errorCode,
+                $exception instanceof NodeRoleOperationException => $exception->errorCode,
                 $exception instanceof RoleAssignmentException => 'node.role_conflict',
                 $exception instanceof ModelNotFoundException, $exception instanceof NotFoundHttpException => 'http.404',
                 default => 'gateway.unhandled',
@@ -144,6 +154,7 @@ final readonly class RecordCommandActivity
             $exception instanceof RuntimeConvergenceException => $exception->result,
             $exception instanceof ProcessOperationException => $exception->result,
             $exception instanceof FirewallOperationException => $exception->result,
+            $exception instanceof NodeRoleOperationException => $exception->result,
             default => null,
         };
 
@@ -189,6 +200,64 @@ final readonly class RecordCommandActivity
             ->first();
 
         return $node?->id;
+    }
+
+    /** @return array<array-key, mixed> */
+    private function activityInput(Request $request): array
+    {
+        $command = $request->route()?->getName();
+
+        if (! in_array($command, ['node:role:add', 'node:role:remove'], strict: true)) {
+            return $this->inputSanitizer->sanitizeProperties($request->collect()->all());
+        }
+
+        $allowedKeys = $command === 'node:role:add'
+            ? ['role', 'converge_existing']
+            : ['force', 'purge_data'];
+
+        try {
+            $input = $this->jsonInspector->inspect($request->getContent(), $allowedKeys);
+        } catch (UnexpectedValueException) {
+            return [];
+        }
+
+        if (! $this->validNodeRoleInput($command, $input, $request)) {
+            return [];
+        }
+
+        $routeRole = $request->route('role');
+
+        if ($command === 'node:role:remove' && is_string($routeRole)) {
+            $input['role'] = $routeRole;
+        }
+
+        return $this->inputSanitizer->sanitizeProperties($input);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @mago-expect analysis:mixed-assignment Request input is an untyped transport boundary.
+     */
+    private function validNodeRoleInput(string $command, array $input, Request $request): bool
+    {
+        if ($command === 'node:role:add') {
+            $role = $input['role'] ?? null;
+
+            return (
+                is_string($role)
+                && RoleName::tryFrom($role) instanceof RoleName
+                && (! array_key_exists('converge_existing', $input) || is_bool($input['converge_existing']))
+            );
+        }
+
+        $routeRole = $request->route('role');
+
+        return (
+            is_string($routeRole)
+            && RoleName::tryFrom($routeRole) instanceof RoleName
+            && (! array_key_exists('force', $input) || is_bool($input['force']))
+            && (! array_key_exists('purge_data', $input) || is_bool($input['purge_data']))
+        );
     }
 
     private function callerIp(Request $request): string

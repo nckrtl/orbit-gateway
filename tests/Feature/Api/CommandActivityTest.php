@@ -2,10 +2,14 @@
 
 declare(strict_types=1);
 
+use App\Domain\Nodes\NodeRoleDependencySet;
+use App\Domain\Nodes\NodeRoleDependentCleaner;
+use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Shared\LifecycleStatus;
 use App\Models\Activity;
 use App\Models\App as OrbitApp;
 use App\Models\Node;
+use App\Models\NodeRole;
 use Illuminate\Support\Str;
 
 it('records one completed activity for each API command', function (): void {
@@ -237,3 +241,91 @@ it('records node access add and remove commands against the serving node and pre
         ->subject_id->toBe($serving->id)
         ->target_node_id->toBe($serving->id);
 });
+
+it('records node role commands against the node with bounded inputs and stable failures', function (): void {
+    $gateway = $this->markAsGateway(Node::query()->create([
+        'name' => 'role-activity-gateway',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.20',
+        'wireguard_address' => '10.44.0.20',
+    ]));
+    $node = Node::query()->create([
+        'name' => 'role-activity-target',
+        'status' => LifecycleStatus::Active,
+        'public_ssh_host' => '192.0.2.21',
+        'wireguard_address' => '10.44.0.21',
+    ]);
+    $lifecycle = new CommandActivityNodeRoleLifecycleFake;
+    app()->instance(RoleBaselineConverger::class, $lifecycle);
+    app()->instance(NodeRoleDependentCleaner::class, $lifecycle);
+    $listRequestId = (string) Str::uuid();
+    $addRequestId = (string) Str::uuid();
+    $removeRequestId = (string) Str::uuid();
+
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $listRequestId)
+        ->getJson("/api/v1/nodes/{$node->id}/roles")
+        ->assertOk();
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $addRequestId)
+        ->postJson("/api/v1/nodes/{$node->id}/roles", [
+            'role' => 'app-dev',
+            'converge_existing' => false,
+        ])
+        ->assertCreated();
+    $this
+        ->withServerVariables(['REMOTE_ADDR' => $gateway->wireguard_address])
+        ->withHeader('X-Orbit-Request-Id', $removeRequestId)
+        ->deleteJson("/api/v1/nodes/{$node->id}/roles/app-dev", [
+            'force' => false,
+            'purge_data' => false,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'validation.failed');
+
+    $activities = Activity::query()
+        ->whereIn('request_id', [$listRequestId, $addRequestId, $removeRequestId])
+        ->get()
+        ->keyBy('request_id');
+
+    expect($activities[$listRequestId])
+        ->command->toBe('node:role:list')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($node->id)
+        ->target_node_id->toBe($node->id)
+        ->status->toBe('succeeded')->and($activities[$addRequestId])
+        ->command->toBe('node:role:add')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($node->id)
+        ->target_node_id->toBe($node->id)
+        ->status->toBe('succeeded')->and($activities[$addRequestId]->properties?->get('input'))->toBe([
+            'role' => 'app-dev',
+            'converge_existing' => false,
+        ])->and($activities[$removeRequestId])
+        ->command->toBe('node:role:remove')
+        ->subject_type->toBe(Node::class)
+        ->subject_id->toBe($node->id)
+        ->target_node_id->toBe($node->id)
+        ->status->toBe('failed')
+        ->error_code->toBe('validation.failed')->and($activities[$removeRequestId]->properties?->get('input'))->toBe([
+            'force' => false,
+            'purge_data' => false,
+            'role' => 'app-dev',
+        ]);
+
+    foreach ($activities as $activity) {
+        expect($activity->properties?->toArray())->not->toHaveKeys(['stdout', 'stderr']);
+    }
+});
+
+/** @mago-expect lint:file-name Test-local fake isolates node role activity from remote effects. */
+final class CommandActivityNodeRoleLifecycleFake implements RoleBaselineConverger, NodeRoleDependentCleaner
+{
+    public function converge(Node $node, NodeRole $assignment): void {}
+
+    public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
+
+    public function clean(NodeRoleDependencySet $dependencies): void {}
+}

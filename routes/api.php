@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\FirewallRulesController;
 use App\Http\Controllers\Api\GatewayStatusesController;
 use App\Http\Controllers\Api\InstancesController;
 use App\Http\Controllers\Api\NodeAccessController;
+use App\Http\Controllers\Api\NodeRolesController;
 use App\Http\Controllers\Api\NodesController;
 use App\Http\Controllers\Api\ProcessesController;
 use App\Http\Controllers\Api\RootCaCertificatesController;
@@ -30,6 +31,15 @@ Route::prefix('v1')->group(function (): void {
             ->name('node:list');
         Route::get('nodes/{node}', [NodesController::class, 'show'])
             ->name('node:show');
+        Route::get('nodes/{node}/roles', [NodeRolesController::class, 'index'])
+            ->whereNumber('node')
+            ->name('node:role:list');
+        Route::post('nodes/{node}/roles', [NodeRolesController::class, 'store'])
+            ->whereNumber('node')
+            ->name('node:role:add');
+        Route::delete('nodes/{node}/roles/{role}', [NodeRolesController::class, 'destroy'])
+            ->whereNumber('node')
+            ->name('node:role:remove');
         Route::get('nodes/{node}/firewall-rules', [FirewallRulesController::class, 'index'])
             ->name('firewall:list');
         Route::get('activities', [ActivitiesController::class, 'index'])

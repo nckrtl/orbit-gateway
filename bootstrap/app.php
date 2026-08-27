@@ -6,6 +6,8 @@ use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Firewall\FirewallOperationException;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\NodeRemovalException;
+use App\Domain\Nodes\NodeRoleOperationException;
+use App\Domain\Nodes\NodeRoleValidationException;
 use App\Domain\Nodes\RoleAssignmentException;
 use App\Domain\Processes\ProcessOperationException;
 use App\Domain\Shared\ResourceOperationException;
@@ -83,6 +85,43 @@ return Application::configure(basePath: dirname(__DIR__))
                             'details' => $exception->errors(),
                         ],
                     ], 422)
+                    ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
+            });
+            $exceptions->render(function (NodeRoleValidationException $exception, Request $request): JsonResponse {
+                $request->attributes->set('orbit.error_code', 'validation.failed');
+                $requestId = $request->attributes->get('orbit.request_id');
+
+                if (! is_string($requestId) || $requestId === '') {
+                    $requestId = $request->header('X-Orbit-Request-Id', '');
+                }
+
+                return response()
+                    ->json([
+                        'error' => [
+                            'code' => 'validation.failed',
+                            'message' => $exception->getMessage(),
+                            'details' => $exception->details,
+                        ],
+                    ], 422)
+                    ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
+            });
+            $exceptions->render(function (NodeRoleOperationException $exception, Request $request): JsonResponse {
+                $request->attributes->set('orbit.error_code', $exception->errorCode);
+                $request->attributes->set('orbit.command_result', $exception->result);
+                $requestId = $request->attributes->get('orbit.request_id');
+
+                if (! is_string($requestId) || $requestId === '') {
+                    $requestId = $request->header('X-Orbit-Request-Id', '');
+                }
+
+                return response()
+                    ->json([
+                        'error' => [
+                            'code' => $exception->errorCode,
+                            'message' => $exception->getMessage(),
+                            'details' => ['step' => $exception->step],
+                        ],
+                    ], 502)
                     ->header('X-Orbit-Request-Id', is_string($requestId) ? $requestId : '');
             });
             $exceptions->render(function (NodeProvisioningException $exception, Request $request): JsonResponse {

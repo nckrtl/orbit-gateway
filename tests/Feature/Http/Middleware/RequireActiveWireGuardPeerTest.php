@@ -126,6 +126,7 @@ it('identifies the peer before resolving a route-bound resource', function (stri
         ->toBe('peer.identity_unknown');
 })->with([
     'node' => '/api/v1/nodes/999999',
+    'node roles' => '/api/v1/nodes/999999/roles',
     'node firewall rules' => '/api/v1/nodes/999999/firewall-rules',
     'app' => '/api/v1/apps/999999',
     'instance' => '/api/v1/instances/999999',
