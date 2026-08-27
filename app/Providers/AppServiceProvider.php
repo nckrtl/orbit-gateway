@@ -31,6 +31,7 @@ use App\Domain\Nodes\NodeRoleDependentCleaner;
 use App\Domain\Nodes\NodeRoleFirewallManager;
 use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Processes\ProcessRuntimeManager;
+use App\Domain\Tools\ToolOperationLock;
 use App\Domain\WireGuard\GatewayPeerProjectionManager;
 use App\Domain\WireGuard\VpnSettings;
 use App\Infrastructure\Activity\ActivityPropertiesObserver;
@@ -83,6 +84,7 @@ use App\Infrastructure\WireGuard\NativeWireGuardPeerConverger;
 use App\Infrastructure\WireGuard\VpnConfigurationRepository;
 use App\Infrastructure\WireGuard\WireGuardPeerConverger;
 use App\Infrastructure\WireGuard\WireGuardServerConfigRenderer;
+use App\Infrastructure\Tools\NativeToolOperationLock;
 use App\Models\Activity;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Boost\Console\InstallCommand;
@@ -113,6 +115,7 @@ final class AppServiceProvider extends ServiceProvider
         ProcessRunner::class => NativeProcessRunner::class,
         SshExecutor::class => NativeSshExecutor::class,
         PrivateDnsManager::class => DnsmasqPrivateDnsManager::class,
+        ToolOperationLock::class => NativeToolOperationLock::class,
     ];
 
     public function register(): void
