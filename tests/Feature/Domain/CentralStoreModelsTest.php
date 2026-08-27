@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 use App\Domain\Instances\CertificateMode;
 use App\Domain\Processes\ProcessRuntime;
+use App\Domain\Shared\LifecycleStatus;
+use App\Domain\Tools\ToolManagerName;
+use App\Domain\Tools\ToolStatus;
 use App\Models\App as OrbitApp;
 use App\Models\Instance;
 use App\Models\Node;
@@ -188,4 +191,64 @@ describe('node access persistence', function (): void {
             'serving_node_id' => $serving->id,
         ]);
     });
+});
+
+it('stores one tracked tool manager and package identity per node', function (): void {
+    $node = Node::query()->create([
+        'name' => 'tools-node',
+        'public_ssh_host' => '192.0.2.80',
+    ]);
+    $manager = $node->toolManagers()->create([
+        'name' => ToolManagerName::Vp,
+        'status' => LifecycleStatus::Active,
+        'installed_version' => '0.2.6',
+    ]);
+    $tool = $node->tools()->create([
+        'tool_manager_id' => $manager->id,
+        'package' => '@openai/codex',
+        'version_constraint' => '^0.150',
+        'status' => ToolStatus::Installed,
+        'installed_version' => '0.150.0',
+    ]);
+
+    expect($manager->node->is($node))
+        ->toBeTrue()
+        ->and($manager->tools()->sole()->is($tool))
+        ->toBeTrue()
+        ->and($tool->node->is($node))
+        ->toBeTrue()
+        ->and($tool->manager->is($manager))
+        ->toBeTrue()
+        ->and($tool->protected)
+        ->toBeFalse()
+        ->and($tool->failed_operation)
+        ->toBeNull();
+});
+
+it('enforces manager and tool identity uniqueness', function (): void {
+    $node = Node::query()->create([
+        'name' => 'unique-tools-node',
+        'public_ssh_host' => '192.0.2.81',
+    ]);
+    $manager = $node->toolManagers()->create([
+        'name' => ToolManagerName::Apt,
+        'status' => LifecycleStatus::Active,
+    ]);
+    $node->tools()->create([
+        'tool_manager_id' => $manager->id,
+        'package' => 'jq',
+        'status' => ToolStatus::Installed,
+    ]);
+
+    expect(fn () => $node->toolManagers()->create([
+        'name' => ToolManagerName::Apt,
+        'status' => LifecycleStatus::Active,
+    ]))
+        ->toThrow(QueryException::class)
+        ->and(fn () => $node->tools()->create([
+            'tool_manager_id' => $manager->id,
+            'package' => 'jq',
+            'status' => ToolStatus::Installed,
+        ]))
+        ->toThrow(QueryException::class);
 });

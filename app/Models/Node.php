@@ -25,6 +25,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string|null $dns_server_override
  * @property string|null $ssh_host_fingerprint
  * @property-read \Illuminate\Database\Eloquent\Collection<int, NodeRole> $roles
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, ToolManagerRecord> $toolManagers
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, Tool> $tools
  * @property-read \Illuminate\Database\Eloquent\Collection<int, Node> $accessibleNodes
  * @property-read \Illuminate\Database\Eloquent\Collection<int, Node> $accessingNodes
  */
@@ -74,6 +76,18 @@ final class Node extends Model
     public function firewallRules(): HasMany
     {
         return $this->hasMany(FirewallRule::class);
+    }
+
+    /** @return HasMany<ToolManagerRecord, $this> */
+    public function toolManagers(): HasMany
+    {
+        return $this->hasMany(ToolManagerRecord::class);
+    }
+
+    /** @return HasMany<Tool, $this> */
+    public function tools(): HasMany
+    {
+        return $this->hasMany(Tool::class);
     }
 
     /** @return BelongsToMany<Node, $this> */
