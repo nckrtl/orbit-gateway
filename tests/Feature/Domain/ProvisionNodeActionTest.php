@@ -4,52 +4,62 @@ declare(strict_types=1);
 
 use App\Actions\Nodes\ProvisionNodeAction;
 use App\Data\Nodes\ProvisionNodeData;
-use App\Domain\AppDev\PrivateDnsManager;
+use App\Domain\AppDev\RuntimeConvergenceException;
 use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Nodes\NodeRoleOperationException;
+use App\Domain\Nodes\RoleAssignmentException;
+use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Nodes\RoleName;
 use App\Domain\Shared\LifecycleStatus;
 use App\Domain\Shared\ResourceOperationException;
 use App\Models\App;
 use App\Models\Node;
+use App\Models\NodeRole;
+use Illuminate\Support\Facades\DB;
 
-/** @mago-expect lint:halstead The shared DNS fake keeps node lifecycle transitions observable. */
+/** @mago-expect lint:halstead The provisioning group keeps ordering and failure boundaries visible. */
 describe(ProvisionNodeAction::class, function (): void {
     beforeEach(function (): void {
-        $this->privateDns = new class implements PrivateDnsManager {
-            public int $calls = 0;
+        app()->instance(RoleBaselineConverger::class, new class implements RoleBaselineConverger {
+            public function converge(Node $node, NodeRole $assignment): void {}
 
-            public ?Throwable $failure = null;
-
-            public ?LifecycleStatus $pendingStatus = null;
-
-            public ?int $pendingNodeId = null;
-
-            public function converge(?Node $pendingNode = null): void
-            {
-                $this->calls++;
-                $this->pendingStatus = $pendingNode?->status;
-                $this->pendingNodeId = $pendingNode?->id;
-
-                if ($this->failure instanceof Throwable) {
-                    throw $this->failure;
-                }
-            }
-        };
-        app()->instance(PrivateDnsManager::class, $this->privateDns);
+            public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
+        });
     });
 
     it('activates a node after its requested roles converge', function (): void {
-        $converger = new class implements NodeConverger {
+        $events = [];
+        $converger = new class($events) implements NodeConverger {
             public ?string $expectedFingerprint = null;
+
+            /** @param list<string> $events */
+            public function __construct(
+                private array &$events,
+            ) {}
 
             public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
             {
                 $this->expectedFingerprint = $expectedSshHostFingerprint;
+                $this->events[] = "base:{$node->status->value}:{$node->roles()->count()}";
             }
         };
         app()->instance(NodeConverger::class, $converger);
+        app()->instance(RoleBaselineConverger::class, new class($events) implements RoleBaselineConverger {
+            /** @param list<string> $events */
+            public function __construct(
+                private array &$events,
+            ) {}
 
+            public function converge(Node $node, NodeRole $assignment): void
+            {
+                $this->events[] = "role:{$assignment->role->value}:{$node->status->value}:".DB::transactionLevel();
+            }
+
+            public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
+        });
+
+        $ambientTransactionLevel = DB::transactionLevel();
         $node = app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
             name: 'app-dev',
             publicSshHost: '94.237.40.75',
@@ -72,10 +82,89 @@ describe(ProvisionNodeAction::class, function (): void {
             ->toBe(LifecycleStatus::Active)
             ->and($converger->expectedFingerprint)
             ->toBe('SHA256:pinned')
-            ->and($this->privateDns->pendingStatus)
-            ->toBe(LifecycleStatus::Provisioning)
-            ->and($this->privateDns->pendingNodeId)
-            ->toBe($node->id);
+            ->and($events)
+            ->toBe(['base:provisioning:0', "role:app-dev:active:{$ambientTransactionLevel}"]);
+    });
+
+    it('rejects pairwise requested role conflicts before persistence or base convergence', function (): void {
+        $converger = new class implements NodeConverger {
+            public int $calls = 0;
+
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void
+            {
+                $this->calls++;
+            }
+        };
+        app()->instance(NodeConverger::class, $converger);
+
+        expect(fn () => app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
+            name: 'conflicted',
+            publicSshHost: '192.0.2.80',
+            roles: [RoleName::AppDev, RoleName::AppProd],
+            architecture: 'x86_64',
+            tld: 'conflicted.orbit',
+            expectedSshHostFingerprint: 'SHA256:pinned',
+        )))
+            ->toThrow(RoleAssignmentException::class);
+
+        expect($converger->calls)
+            ->toBe(0)
+            ->and(Node::query()->where('name', 'conflicted')->exists())
+            ->toBeFalse();
+    });
+
+    it('reconverges requested existing roles and leaves omitted roles untouched', function (): void {
+        app()->instance(NodeConverger::class, new class implements NodeConverger {
+            public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
+        });
+        $roles = [];
+        app()->instance(RoleBaselineConverger::class, new class($roles) implements RoleBaselineConverger {
+            /** @param list<RoleName> $roles */
+            public function __construct(
+                private array &$roles,
+            ) {}
+
+            public function converge(Node $node, NodeRole $assignment): void
+            {
+                $this->roles[] = $assignment->role;
+            }
+
+            public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
+        });
+        $node = Node::query()->create([
+            'name' => 'existing-host',
+            'status' => LifecycleStatus::Active,
+            'platform' => 'linux',
+            'architecture' => 'x86_64',
+            'tld' => 'existing.orbit',
+            'public_ssh_host' => '192.0.2.81',
+            'wireguard_address' => '10.44.0.8',
+            'ssh_host_fingerprint' => 'SHA256:pinned',
+        ]);
+        $requested = $node->roles()->create(['role' => RoleName::AppDev, 'status' => LifecycleStatus::Active]);
+        $omitted = $node->roles()->create([
+            'role' => RoleName::Vpn,
+            'status' => LifecycleStatus::Failed,
+            'failed_step' => 'converge:dnsmasq',
+            'error_code' => 'vpn.dnsmasq_failed',
+        ]);
+
+        app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
+            name: 'existing-host',
+            publicSshHost: '192.0.2.81',
+            roles: [RoleName::AppDev],
+        ));
+
+        expect($roles)
+            ->toBe([RoleName::AppDev])
+            ->and($requested->refresh()->status)
+            ->toBe(LifecycleStatus::Active)
+            ->and($omitted->refresh()->status)
+            ->toBe(LifecycleStatus::Failed)
+            ->and($omitted->failed_step)
+            ->toBe('converge:dnsmasq')
+            ->and($omitted->error_code)
+            ->toBe('vpn.dnsmasq_failed');
     });
 
     it('passes the operator expected pin without storing it as the observed fingerprint', function (): void {
@@ -174,8 +263,8 @@ describe(ProvisionNodeAction::class, function (): void {
             ])
             ->and($node->tld)
             ->toBe('app-dev.orbit')
-            ->and($this->privateDns->calls)
-            ->toBe(1);
+            ->and($node->roles()->sole()->status)
+            ->toBe(LifecycleStatus::Active);
     });
 
     it('rejects a TLD change while the node owns instances', function (): void {
@@ -227,8 +316,6 @@ describe(ProvisionNodeAction::class, function (): void {
         expect($node->refresh()->tld)
             ->toBe('app-dev.orbit')
             ->and($converger->calls)
-            ->toBe(0)
-            ->and($this->privateDns->calls)
             ->toBe(0);
     });
 
@@ -260,10 +347,7 @@ describe(ProvisionNodeAction::class, function (): void {
             expect($exception->errorCode)->toBe('node.tld_required');
         });
 
-        expect($converger->calls)
-            ->toBe(0)
-            ->and($this->privateDns->calls)
-            ->toBe(0);
+        expect($converger->calls)->toBe(0);
     });
 
     it('rejects non-Linux nodes before persistence or convergence', function (): void {
@@ -291,8 +375,6 @@ describe(ProvisionNodeAction::class, function (): void {
         expect(Node::query()->where('name', 'mac-dev')->exists())
             ->toBeFalse()
             ->and($converger->calls)
-            ->toBe(0)
-            ->and($this->privateDns->calls)
             ->toBe(0);
     });
 
@@ -312,11 +394,22 @@ describe(ProvisionNodeAction::class, function (): void {
         expect(Node::query()->where('name', 'linux-node')->exists())->toBeFalse();
     });
 
-    it('marks the node and roles failed when private DNS projection fails', function (): void {
+    it('keeps the node active when initial role convergence fails', function (): void {
         app()->instance(NodeConverger::class, new class implements NodeConverger {
             public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
         });
-        $this->privateDns->failure = new RuntimeException('dnsmasq failed');
+        app()->instance(RoleBaselineConverger::class, new class implements RoleBaselineConverger {
+            public function converge(Node $node, NodeRole $assignment): void
+            {
+                throw new RuntimeConvergenceException(
+                    step: 'caddy-config',
+                    errorCode: 'app-dev.caddy_config_failed',
+                    message: 'Caddy failed.',
+                );
+            }
+
+            public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
+        });
 
         expect(fn () => app(ProvisionNodeAction::class)->execute(new ProvisionNodeData(
             name: 'app-dev',
@@ -325,23 +418,27 @@ describe(ProvisionNodeAction::class, function (): void {
             architecture: 'x86_64',
             tld: 'app-dev.orbit',
             expectedSshHostFingerprint: 'SHA256:pinned',
-        )))->toThrow(function (NodeProvisioningException $exception): void {
+        )))->toThrow(function (NodeRoleOperationException $exception): void {
             expect($exception->step)
-                ->toBe('private-dns')
+                ->toBe('converge:caddy-config')
                 ->and($exception->errorCode)
-                ->toBe('node.dns_projection_failed');
+                ->toBe('node_role.convergence_failed');
         });
 
         $node = Node::query()->where('name', 'app-dev')->sole();
 
         expect($node->status)
-            ->toBe(LifecycleStatus::Failed)
+            ->toBe(LifecycleStatus::Active)
             ->and($node->roles()->sole()->status)
             ->toBe(LifecycleStatus::Failed)
             ->and($node->failed_step)
-            ->toBe('private-dns')
+            ->toBeNull()
             ->and($node->error_code)
-            ->toBe('node.dns_projection_failed');
+            ->toBeNull()
+            ->and($node->roles()->sole()->failed_step)
+            ->toBe('converge:caddy-config')
+            ->and($node->roles()->sole()->error_code)
+            ->toBe('app-dev.caddy_config_failed');
     });
 
     it('rejects duplicate app-dev TLD ownership before convergence', function (): void {
@@ -447,6 +544,8 @@ describe(ProvisionNodeAction::class, function (): void {
             ->and($node->failed_step)
             ->toBe('base-packages')
             ->and($node->error_code)
-            ->toBe('node.package_install_failed');
+            ->toBe('node.package_install_failed')
+            ->and($node->roles()->exists())
+            ->toBeFalse();
     });
 });

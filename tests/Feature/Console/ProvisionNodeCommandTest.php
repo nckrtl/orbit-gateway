@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Nodes\NodeConverger;
+use App\Domain\Nodes\RoleBaselineConverger;
 use App\Models\Node;
+use App\Models\NodeRole;
 
 it('provisions the first peer from the gateway console', function (): void {
     app()->instance(PrivateDnsManager::class, new class implements PrivateDnsManager {
@@ -12,6 +14,11 @@ it('provisions the first peer from the gateway console', function (): void {
     });
     app()->instance(NodeConverger::class, new class implements NodeConverger {
         public function converge(Node $node, ?string $expectedSshHostFingerprint = null): void {}
+    });
+    app()->instance(RoleBaselineConverger::class, new class implements RoleBaselineConverger {
+        public function converge(Node $node, NodeRole $assignment): void {}
+
+        public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
     });
 
     $this

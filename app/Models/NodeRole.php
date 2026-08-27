@@ -14,6 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $node_id
  * @property RoleName $role
  * @property LifecycleStatus $status
+ * @property string|null $failed_step
+ * @property string|null $error_code
  * @property-read Node $node
  */
 final class NodeRole extends Model
@@ -32,6 +34,46 @@ final class NodeRole extends Model
     public function node(): BelongsTo
     {
         return $this->belongsTo(Node::class);
+    }
+
+    public function canClaimConvergence(): bool
+    {
+        if ($this->status === LifecycleStatus::Active) {
+            return true;
+        }
+
+        return (
+            $this->status === LifecycleStatus::Failed
+            && is_string($this->failed_step)
+            && str_starts_with($this->failed_step, 'converge:')
+        );
+    }
+
+    public function claimConvergence(): void
+    {
+        $this->update([
+            'status' => LifecycleStatus::Provisioning,
+            'failed_step' => null,
+            'error_code' => null,
+        ]);
+    }
+
+    public function markConvergenceActive(): void
+    {
+        $this->update([
+            'status' => LifecycleStatus::Active,
+            'failed_step' => null,
+            'error_code' => null,
+        ]);
+    }
+
+    public function markConvergenceFailed(string $step, string $errorCode): void
+    {
+        $this->update([
+            'status' => LifecycleStatus::Failed,
+            'failed_step' => "converge:{$step}",
+            'error_code' => $errorCode,
+        ]);
     }
 
     /** @return array<string, class-string|literal-string> */

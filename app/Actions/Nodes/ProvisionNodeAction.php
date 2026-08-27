@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Actions\Nodes;
 
 use App\Data\Nodes\ProvisionNodeData;
-use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
 use App\Domain\Nodes\NodeTld;
@@ -22,10 +21,9 @@ use Throwable;
 final readonly class ProvisionNodeAction
 {
     public function __construct(
-        private AssignRoleAction $assignRole,
+        private AddNodeRoleAction $roles,
         private NodeConverger $converger,
         private WireGuardAddressAllocator $addresses,
-        private PrivateDnsManager $dns,
     ) {}
 
     /** @mago-expect lint:halstead Ordered provisioning keeps persisted state and failure recovery in one transaction-like flow. */
@@ -61,6 +59,10 @@ final readonly class ProvisionNodeAction
             $publicSshHost = $wireguardAddress;
         }
 
+        foreach ($data->roles as $role) {
+            $this->roles->preflightDuringProvisioning($node, $role, $data->roles);
+        }
+
         $node->fill([
             'status' => LifecycleStatus::Provisioning,
             'platform' => $platform,
@@ -77,27 +79,7 @@ final readonly class ProvisionNodeAction
         ])->save();
 
         try {
-            foreach ($data->roles as $role) {
-                $this->assignRole->execute($node, $role);
-            }
-
-            $node->roles()->update([
-                'status' => LifecycleStatus::Provisioning,
-                'failed_step' => null,
-                'error_code' => null,
-            ]);
-
             $this->converger->converge($node, $data->expectedSshHostFingerprint);
-
-            if ($this->hasAppDevRole($node, $data)) {
-                $this->convergePrivateDns($node);
-            }
-
-            $node->update([
-                'status' => LifecycleStatus::Active,
-                'failed_step' => null,
-                'error_code' => null,
-            ]);
         } catch (NodeProvisioningException $exception) {
             $this->markFailed($node, $exception);
 
@@ -125,11 +107,15 @@ final readonly class ProvisionNodeAction
             throw $failure;
         }
 
-        $node->roles()->update([
+        $node->update([
             'status' => LifecycleStatus::Active,
             'failed_step' => null,
             'error_code' => null,
         ]);
+
+        foreach ($data->roles as $role) {
+            $this->roles->executeDuringProvisioning($node, $role);
+        }
 
         return $node->refresh()->load('roles');
     }
@@ -228,20 +214,6 @@ final readonly class ProvisionNodeAction
         );
     }
 
-    private function convergePrivateDns(Node $pendingNode): void
-    {
-        try {
-            $this->dns->converge($pendingNode);
-        } catch (Throwable $exception) {
-            throw new NodeProvisioningException(
-                step: 'private-dns',
-                errorCode: 'node.dns_projection_failed',
-                message: 'Could not publish the node private DNS projection.',
-                previous: $exception,
-            );
-        }
-    }
-
     private function validateEndpointOverride(ProvisionNodeData $data): void
     {
         if (
@@ -264,6 +236,5 @@ final readonly class ProvisionNodeAction
         ];
 
         $node->update($failure);
-        $node->roles()->update($failure);
     }
 }

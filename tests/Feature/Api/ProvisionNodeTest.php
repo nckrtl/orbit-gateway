@@ -2,21 +2,24 @@
 
 declare(strict_types=1);
 
-use App\Domain\AppDev\PrivateDnsManager;
 use App\Domain\Nodes\NodeConverger;
 use App\Domain\Nodes\NodeProvisioningException;
+use App\Domain\Nodes\RoleBaselineConverger;
 use App\Domain\Shared\LifecycleStatus;
 use App\Infrastructure\Processes\CommandResult;
 use App\Infrastructure\Ssh\SshHostKeyScanException;
 use App\Models\Activity;
 use App\Models\Node;
+use App\Models\NodeRole;
 use Illuminate\Support\Str;
 
 /** @mago-expect lint:halstead The API matrix keeps registration, recovery, and activity contracts together. */
 describe('POST /api/v1/nodes', function (): void {
     beforeEach(function (): void {
-        app()->instance(PrivateDnsManager::class, new class implements PrivateDnsManager {
-            public function converge(?Node $pendingNode = null): void {}
+        app()->instance(RoleBaselineConverger::class, new class implements RoleBaselineConverger {
+            public function converge(Node $node, NodeRole $assignment): void {}
+
+            public function remove(Node $node, NodeRole $assignment, bool $purgeData): void {}
         });
         $operator = Node::query()->create([
             'name' => 'operator',
@@ -426,7 +429,6 @@ describe('POST /api/v1/nodes', function (): void {
             ->assertJsonPath('error.details.step', 'ssh-host-key');
 
         $node = Node::query()->where('name', 'first-contact-node')->sole();
-        $role = $node->roles()->sole();
         $activity = Activity::query()->where('request_id', $requestId)->sole();
 
         expect($response->getContent())
@@ -438,12 +440,8 @@ describe('POST /api/v1/nodes', function (): void {
             ->toBe('ssh-host-key')
             ->and($node->error_code)
             ->toBe('node.ssh_host_key_scan_failed')
-            ->and($role->status)
-            ->toBe(LifecycleStatus::Failed)
-            ->and($role->failed_step)
-            ->toBe('ssh-host-key')
-            ->and($role->error_code)
-            ->toBe('node.ssh_host_key_scan_failed')
+            ->and($node->roles()->exists())
+            ->toBeFalse()
             ->and($activity->error_code)
             ->toBe('node.ssh_host_key_scan_failed')
             ->and($activity->exit_code)
